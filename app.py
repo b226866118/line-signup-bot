@@ -262,6 +262,9 @@ HELP_TEXT = """【活動報名 Bot｜多活動版】
 查看全部活動名單：
 全部名單
 
+※ 報名／代報／取消成功時不回覆，避免洗版；
+   只有重複、格式錯誤或找不到資料時才提醒。
+
 結束活動：
 結束1
 """
@@ -336,11 +339,8 @@ def handle_group_text(event):
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
         ok = add_signup(ev["id"], user_name, "self", line_user_id=user_id)
-        reply(
-            reply_token,
-            f"✅ {user_name} 已報名「{ev['title']}」。"
-            if ok else f"{user_name} 已經在「{ev['title']}」名單裡了。"
-        )
+        if not ok:
+            reply(reply_token, f"{user_name} 已經在「{ev['title']}」名單裡了。")
         return
 
     num, person_name = match_command_number_name(text, "代報")
@@ -353,11 +353,8 @@ def handle_group_text(event):
             ev["id"], person_name, "proxy",
             proxy_by_user_id=user_id, proxy_by_name=user_name
         )
-        reply(
-            reply_token,
-            f"✅ 已代報：{person_name}\n活動：{ev['title']}\n代報人：{user_name}"
-            if ok else f"{person_name} 已經在「{ev['title']}」名單裡了。"
-        )
+        if not ok:
+            reply(reply_token, f"{person_name} 已經在「{ev['title']}」名單裡了。")
         return
     elif text.startswith("代報"):
         reply(reply_token, "格式：代報1 王小明\n（代報 1 王小明 也可以）")
@@ -370,11 +367,8 @@ def handle_group_text(event):
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
         ok = remove_self_signup(ev["id"], user_id)
-        reply(
-            reply_token,
-            f"✅ 已取消你在「{ev['title']}」的報名。"
-            if ok else f"找不到你在「{ev['title']}」的本人報名紀錄。"
-        )
+        if not ok:
+            reply(reply_token, f"找不到你在「{ev['title']}」的本人報名紀錄。")
         return
     elif text.startswith("取消報名"):
         reply(reply_token, "請輸入活動編號，例如：取消報名1")
@@ -387,11 +381,8 @@ def handle_group_text(event):
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
         ok = remove_signup(ev["id"], person_name)
-        reply(
-            reply_token,
-            f"✅ 已從「{ev['title']}」取消：{person_name}"
-            if ok else f"「{ev['title']}」名單中找不到：{person_name}"
-        )
+        if not ok:
+            reply(reply_token, f"「{ev['title']}」名單中找不到：{person_name}")
         return
     elif text.startswith("取消"):
         reply(reply_token, "格式：取消1 王小明\n（取消 1 王小明 也可以）")

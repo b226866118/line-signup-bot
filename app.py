@@ -28,7 +28,7 @@ def init_db():
     conn = db()
     cur = conn.cursor()
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS events (
+    CREATE TABLE IF NOT EXISTS line_events (
         id SERIAL PRIMARY KEY,
         group_id TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -37,9 +37,9 @@ def init_db():
     );
     """)
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS signups (
+    CREATE TABLE IF NOT EXISTS line_signups (
         id SERIAL PRIMARY KEY,
-        event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        event_id INTEGER NOT NULL REFERENCES line_events(id) ON DELETE CASCADE,
         person_name TEXT NOT NULL,
         line_user_id TEXT,
         signup_type TEXT NOT NULL,
@@ -95,7 +95,7 @@ def create_event(group_id: str, title: str):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO events(group_id, title, active, created_at)
+        INSERT INTO line_events(group_id, title, active, created_at)
         VALUES (%s, %s, TRUE, %s)
         RETURNING id
         """,
@@ -113,7 +113,7 @@ def list_active_events(group_id: str):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
-        SELECT * FROM events
+        SELECT * FROM line_events
         WHERE group_id = %s AND active = TRUE
         ORDER BY id ASC
         """,
@@ -135,7 +135,7 @@ def get_event_by_number(group_id: str, number: int):
 def list_signups(event_id: int):
     conn = db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM signups WHERE event_id = %s ORDER BY id ASC", (event_id,))
+    cur.execute("SELECT * FROM line_signups WHERE event_id = %s ORDER BY id ASC", (event_id,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -149,7 +149,7 @@ def add_signup(event_id: int, person_name: str, signup_type: str,
     try:
         cur.execute(
             """
-            INSERT INTO signups(
+            INSERT INTO line_signups(
                 event_id, person_name, line_user_id, signup_type,
                 proxy_by_user_id, proxy_by_name, created_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -173,7 +173,7 @@ def remove_signup(event_id: int, person_name: str):
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "DELETE FROM signups WHERE event_id = %s AND person_name = %s",
+        "DELETE FROM line_signups WHERE event_id = %s AND person_name = %s",
         (event_id, person_name),
     )
     ok = cur.rowcount > 0
@@ -188,7 +188,7 @@ def remove_self_signup(event_id: int, user_id: str):
     cur = conn.cursor()
     cur.execute(
         """
-        DELETE FROM signups
+        DELETE FROM line_signups
         WHERE event_id = %s AND line_user_id = %s AND signup_type = 'self'
         """,
         (event_id, user_id),
@@ -207,7 +207,7 @@ def close_event(group_id: str, number: int):
 
     conn = db()
     cur = conn.cursor()
-    cur.execute("UPDATE events SET active = FALSE WHERE id = %s", (ev["id"],))
+    cur.execute("UPDATE line_events SET active = FALSE WHERE id = %s", (ev["id"],))
     conn.commit()
     cur.close()
     conn.close()

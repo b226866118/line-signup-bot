@@ -40,7 +40,7 @@ def init_db():
         event_id INTEGER NOT NULL,
         person_name TEXT NOT NULL,
         line_user_id TEXT,
-        signup_type TEXT NOT NULL,     -- self / proxy
+        signup_type TEXT NOT NULL,
         proxy_by_user_id TEXT,
         proxy_by_name TEXT,
         created_at TEXT NOT NULL,
@@ -104,7 +104,7 @@ def active_event(group_id: str):
 def create_event(group_id: str, title: str):
     conn = db()
     conn.execute("UPDATE events SET active = 0 WHERE group_id = ?", (group_id,))
-    cur = conn.execute(
+    conn.execute(
         """
         INSERT INTO events(group_id, title, active, created_at)
         VALUES (?, ?, 1, ?)
@@ -112,9 +112,7 @@ def create_event(group_id: str, title: str):
         (group_id, title, datetime.now().isoformat(timespec="seconds"))
     )
     conn.commit()
-    event_id = cur.lastrowid
     conn.close()
-    return event_id
 
 
 def add_signup(event_id: int, person_name: str, signup_type: str,
@@ -150,9 +148,9 @@ def remove_signup(event_id: int, person_name: str):
         (event_id, person_name)
     )
     conn.commit()
-    deleted = cur.rowcount > 0
+    ok = cur.rowcount > 0
     conn.close()
-    return deleted
+    return ok
 
 
 def remove_self_signup(event_id: int, user_id: str):
@@ -165,19 +163,15 @@ def remove_self_signup(event_id: int, user_id: str):
         (event_id, user_id)
     )
     conn.commit()
-    deleted = cur.rowcount > 0
+    ok = cur.rowcount > 0
     conn.close()
-    return deleted
+    return ok
 
 
 def list_signups(event_id: int):
     conn = db()
     rows = conn.execute(
-        """
-        SELECT * FROM signups
-        WHERE event_id = ?
-        ORDER BY id ASC
-        """,
+        "SELECT * FROM signups WHERE event_id = ? ORDER BY id ASC",
         (event_id,)
     ).fetchall()
     conn.close()
@@ -192,13 +186,7 @@ HELP_TEXT = """【活動報名 Bot】
 取消 姓名
 名單
 活動
-說明
-
-例：
-開活動 9/20 新民班
-代報 王小明
-代報 李小華
-名單"""
+說明"""
 
 
 def handle_group_text(event):
@@ -249,10 +237,11 @@ def handle_group_text(event):
             signup_type="self",
             line_user_id=user_id
         )
-        if ok:
-            reply(reply_token, f"✅ {user_name} 已報名「{ev['title']}」。")
-        else:
-            reply(reply_token, f"{user_name} 已經在名單裡了。")
+        reply(
+            reply_token,
+            f"✅ {user_name} 已報名「{ev['title']}」。"
+            if ok else f"{user_name} 已經在名單裡了。"
+        )
         return
 
     if text.startswith("代報 "):
@@ -267,35 +256,22 @@ def handle_group_text(event):
             proxy_by_user_id=user_id,
             proxy_by_name=user_name
         )
-        if ok:
-            reply(
-                reply_token,
-                f"✅ 已代報：{person_name}\n"
-                f"代報人：{user_name}\n"
-                f"活動：{ev['title']}"
-            )
-        else:
-            reply(reply_token, f"{person_name} 已經在這場活動的名單裡了。")
+        reply(
+            reply_token,
+            f"✅ 已代報：{person_name}\n代報人：{user_name}\n活動：{ev['title']}"
+            if ok else f"{person_name} 已經在這場活動的名單裡了。"
+        )
         return
 
     if text == "取消報名":
         ok = remove_self_signup(ev["id"], user_id)
-        reply(
-            reply_token,
-            "✅ 已取消你的報名。" if ok else "找不到你的本人報名紀錄。"
-        )
+        reply(reply_token, "✅ 已取消你的報名。" if ok else "找不到你的本人報名紀錄。")
         return
 
     if text.startswith("取消 "):
         person_name = text[len("取消 "):].strip()
-        if not person_name:
-            reply(reply_token, "請輸入姓名，例如：取消 王小明")
-            return
         ok = remove_signup(ev["id"], person_name)
-        reply(
-            reply_token,
-            f"✅ 已取消：{person_name}" if ok else f"名單中找不到：{person_name}"
-        )
+        reply(reply_token, f"✅ 已取消：{person_name}" if ok else f"名單中找不到：{person_name}")
         return
 
     if text == "名單":
@@ -307,15 +283,11 @@ def handle_group_text(event):
         lines = [f"📋 {ev['title']}", f"目前共 {len(rows)} 人", ""]
         for i, row in enumerate(rows, 1):
             if row["signup_type"] == "proxy":
-                lines.append(
-                    f"{i}. {row['person_name']}（{row['proxy_by_name']} 代報）"
-                )
+                lines.append(f"{i}. {row['person_name']}（{row['proxy_by_name']} 代報）")
             else:
                 lines.append(f"{i}. {row['person_name']}")
         reply(reply_token, "\n".join(lines))
         return
-
-    # 不回覆一般聊天，避免 Bot 自己變成洗版來源。
 
 
 @app.route("/callback", methods=["POST"])
@@ -342,6 +314,10 @@ def health():
     return "LINE signup bot is running."
 
 
+# 重要：Render 是用 gunicorn app:app 啟動，不會執行 __main__
+# 所以資料庫必須在模組載入時初始化。
+init_db()
+
+
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

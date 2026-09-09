@@ -78,7 +78,6 @@ def reply(reply_token: str, text: str):
 def get_member_name(group_id: str, user_id: str) -> str:
     if not group_id or not user_id:
         return "未知使用者"
-
     url = LINE_MEMBER_PROFILE_URL.format(group_id=group_id, user_id=user_id)
     headers = {"Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"}
     r = requests.get(url, headers=headers, timeout=10)
@@ -87,24 +86,9 @@ def get_member_name(group_id: str, user_id: str) -> str:
     return "未知使用者"
 
 
-def active_event(group_id: str):
-    conn = db()
-    row = conn.execute(
-        """
-        SELECT * FROM events
-        WHERE group_id = ? AND active = 1
-        ORDER BY id DESC LIMIT 1
-        """,
-        (group_id,)
-    ).fetchone()
-    conn.close()
-    return row
-
-
 def create_event(group_id: str, title: str):
     conn = db()
-    conn.execute("UPDATE events SET active = 0 WHERE group_id = ?", (group_id,))
-    conn.execute(
+    cur = conn.execute(
         """
         INSERT INTO events(group_id, title, active, created_at)
         VALUES (?, ?, 1, ?)
@@ -112,7 +96,40 @@ def create_event(group_id: str, title: str):
         (group_id, title, datetime.now().isoformat(timespec="seconds"))
     )
     conn.commit()
+    event_id = cur.lastrowid
     conn.close()
+    return event_id
+
+
+def list_active_events(group_id: str):
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT * FROM events
+        WHERE group_id = ? AND active = 1
+        ORDER BY id ASC
+        """,
+        (group_id,)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_event_by_number(group_id: str, number: int):
+    events = list_active_events(group_id)
+    if number < 1 or number > len(events):
+        return None
+    return events[number - 1]
+
+
+def list_signups(event_id: int):
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM signups WHERE event_id = ? ORDER BY id ASC",
+        (event_id,)
+    ).fetchall()
+    conn.close()
+    return rows
 
 
 def add_signup(event_id: int, person_name: str, signup_type: str,
@@ -168,25 +185,63 @@ def remove_self_signup(event_id: int, user_id: str):
     return ok
 
 
-def list_signups(event_id: int):
+def close_event(group_id: str, number: int):
+    ev = get_event_by_number(group_id, number)
+    if not ev:
+        return None
     conn = db()
-    rows = conn.execute(
-        "SELECT * FROM signups WHERE event_id = ? ORDER BY id ASC",
-        (event_id,)
-    ).fetchall()
+    conn.execute("UPDATE events SET active = 0 WHERE id = ?", (ev["id"],))
+    conn.commit()
     conn.close()
-    return rows
+    return ev
 
 
-HELP_TEXT = """【活動報名 Bot】
-開活動 活動名稱
-報名
-代報 姓名
-取消報名
-取消 姓名
-名單
+def event_list_text(group_id: str):
+    events = list_active_events(group_id)
+    if not events:
+        return "目前沒有進行中的活動。"
+    lines = ["📌 目前進行中的活動：", ""]
+    for i, ev in enumerate(events, 1):
+        count = len(list_signups(ev["id"]))
+        lines.append(f"{i}. {ev['title']}（{count} 人）")
+    lines.append("")
+    lines.append("例如：報名 1／代報 1 王小明／名單 1")
+    return "\n".join(lines)
+
+
+def parse_number(parts, index=1):
+    try:
+        return int(parts[index])
+    except (ValueError, IndexError):
+        return None
+
+
+HELP_TEXT = """【活動報名 Bot｜多活動版】
+
+建立活動：
+開活動 9/20 新民班
+
+查看目前活動：
 活動
-說明"""
+
+本人報名：
+報名 1
+
+代報：
+代報 1 王小明
+
+取消自己的報名：
+取消報名 1
+
+取消指定姓名：
+取消 1 王小明
+
+查看名單：
+名單 1
+
+結束活動：
+結束 1
+"""
 
 
 def handle_group_text(event):
@@ -209,77 +264,104 @@ def handle_group_text(event):
     if text.startswith("開活動 "):
         title = text[len("開活動 "):].strip()
         if not title:
-            reply(reply_token, "請輸入活動名稱，例如：開活動 9/20 茶會")
+            reply(reply_token, "請輸入活動名稱，例如：開活動 9/20 新民班")
             return
         create_event(group_id, title)
-        reply(
-            reply_token,
-            f"📌 已建立活動：{title}\n\n"
-            f"本人報名：輸入「報名」\n"
-            f"代新人報名：輸入「代報 姓名」\n"
-            f"查看：輸入「名單」"
-        )
-        return
-
-    ev = active_event(group_id)
-    if not ev:
-        reply(reply_token, "目前沒有進行中的活動。\n請先輸入：開活動 活動名稱")
+        reply(reply_token, f"✅ 已建立活動：{title}\n\n" + event_list_text(group_id))
         return
 
     if text == "活動":
-        reply(reply_token, f"目前活動：{ev['title']}")
+        reply(reply_token, event_list_text(group_id))
         return
 
-    if text == "報名":
-        ok = add_signup(
-            ev["id"],
-            person_name=user_name,
-            signup_type="self",
-            line_user_id=user_id
-        )
+    parts = text.split()
+
+    if parts and parts[0] == "報名":
+        num = parse_number(parts)
+        if num is None:
+            reply(reply_token, "請輸入活動編號，例如：報名 1")
+            return
+        ev = get_event_by_number(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
+        ok = add_signup(ev["id"], user_name, "self", line_user_id=user_id)
         reply(
             reply_token,
             f"✅ {user_name} 已報名「{ev['title']}」。"
-            if ok else f"{user_name} 已經在名單裡了。"
+            if ok else f"{user_name} 已經在「{ev['title']}」名單裡了。"
         )
         return
 
-    if text.startswith("代報 "):
-        person_name = text[len("代報 "):].strip()
-        if not person_name:
-            reply(reply_token, "請輸入姓名，例如：代報 王小明")
+    if parts and parts[0] == "代報":
+        num = parse_number(parts)
+        if num is None or len(parts) < 3:
+            reply(reply_token, "格式：代報 活動編號 姓名\n例如：代報 1 王小明")
             return
+        ev = get_event_by_number(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
+        person_name = " ".join(parts[2:]).strip()
         ok = add_signup(
-            ev["id"],
-            person_name=person_name,
-            signup_type="proxy",
-            proxy_by_user_id=user_id,
-            proxy_by_name=user_name
+            ev["id"], person_name, "proxy",
+            proxy_by_user_id=user_id, proxy_by_name=user_name
         )
         reply(
             reply_token,
-            f"✅ 已代報：{person_name}\n代報人：{user_name}\n活動：{ev['title']}"
-            if ok else f"{person_name} 已經在這場活動的名單裡了。"
+            f"✅ 已代報：{person_name}\n活動：{ev['title']}\n代報人：{user_name}"
+            if ok else f"{person_name} 已經在「{ev['title']}」名單裡了。"
         )
         return
 
-    if text == "取消報名":
+    if parts and parts[0] == "取消報名":
+        num = parse_number(parts)
+        if num is None:
+            reply(reply_token, "請輸入活動編號，例如：取消報名 1")
+            return
+        ev = get_event_by_number(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
         ok = remove_self_signup(ev["id"], user_id)
-        reply(reply_token, "✅ 已取消你的報名。" if ok else "找不到你的本人報名紀錄。")
+        reply(
+            reply_token,
+            f"✅ 已取消你在「{ev['title']}」的報名。"
+            if ok else f"找不到你在「{ev['title']}」的本人報名紀錄。"
+        )
         return
 
-    if text.startswith("取消 "):
-        person_name = text[len("取消 "):].strip()
+    if parts and parts[0] == "取消":
+        num = parse_number(parts)
+        if num is None or len(parts) < 3:
+            reply(reply_token, "格式：取消 活動編號 姓名\n例如：取消 1 王小明")
+            return
+        ev = get_event_by_number(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
+        person_name = " ".join(parts[2:]).strip()
         ok = remove_signup(ev["id"], person_name)
-        reply(reply_token, f"✅ 已取消：{person_name}" if ok else f"名單中找不到：{person_name}")
+        reply(
+            reply_token,
+            f"✅ 已從「{ev['title']}」取消：{person_name}"
+            if ok else f"「{ev['title']}」名單中找不到：{person_name}"
+        )
         return
 
-    if text == "名單":
+    if parts and parts[0] == "名單":
+        num = parse_number(parts)
+        if num is None:
+            reply(reply_token, "請輸入活動編號，例如：名單 1")
+            return
+        ev = get_event_by_number(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
         rows = list_signups(ev["id"])
         if not rows:
             reply(reply_token, f"📋 {ev['title']}\n目前還沒有人報名。")
             return
-
         lines = [f"📋 {ev['title']}", f"目前共 {len(rows)} 人", ""]
         for i, row in enumerate(rows, 1):
             if row["signup_type"] == "proxy":
@@ -289,12 +371,23 @@ def handle_group_text(event):
         reply(reply_token, "\n".join(lines))
         return
 
+    if parts and parts[0] == "結束":
+        num = parse_number(parts)
+        if num is None:
+            reply(reply_token, "請輸入活動編號，例如：結束 1")
+            return
+        ev = close_event(group_id, num)
+        if not ev:
+            reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
+            return
+        reply(reply_token, f"✅ 已結束活動：{ev['title']}\n\n" + event_list_text(group_id))
+        return
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
     body = request.get_data()
     signature = request.headers.get("X-Line-Signature", "")
-
     if not verify_signature(body, signature):
         abort(400)
 
@@ -305,7 +398,6 @@ def callback():
             and event.get("message", {}).get("type") == "text"
         ):
             handle_group_text(event)
-
     return "OK"
 
 
@@ -314,10 +406,7 @@ def health():
     return "LINE signup bot is running."
 
 
-# 重要：Render 是用 gunicorn app:app 啟動，不會執行 __main__
-# 所以資料庫必須在模組載入時初始化。
 init_db()
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

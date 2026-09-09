@@ -246,9 +246,10 @@ HELP_TEXT = """【活動報名 Bot｜多活動版】
 報名1
 （報名 1 也可以）
 
-代報：
-代報1 王小明
-（代報 1 王小明 也可以）
+代報（可一次多人）：
+代報1 王小明 李小華 陳大華
+也可用：頓號、逗號、分號、斜線或換行
+例如：代報1 王小明、李小華、陳大華
 
 取消自己的報名：
 取消報名1
@@ -301,6 +302,45 @@ def all_signup_lists_text(group_id: str):
     return header + "\n\n".join(sections)
 
 
+
+def split_names(raw: str):
+    """
+    代報名單防呆：
+    支援空格、全形空格、逗號、頓號、分號、斜線、換行。
+    例如：
+      王小明 李小華 陳大華
+      王小明、李小華、陳大華
+      王小明, 李小華; 陳大華
+      王小明
+      李小華
+      陳大華
+
+    注意：若姓名本身含空格，會被拆開；本版以中文姓名使用情境為主。
+    """
+    if not raw:
+        return []
+
+    normalized = raw.replace("\u3000", " ")
+    # First split by strong separators, then also split remaining chunks by whitespace.
+    chunks = re.split(r"[、,，;；/／\n\r\t]+", normalized)
+    names = []
+    seen = set()
+
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+
+        # Also accept plain spaces as separators.
+        parts = [p.strip() for p in re.split(r"\s+", chunk) if p.strip()]
+        for name in parts:
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+
+    return names
+
+
 def handle_group_text(event):
     source = event.get("source", {})
     group_id = source.get("groupId")
@@ -343,21 +383,54 @@ def handle_group_text(event):
             reply(reply_token, f"{user_name} 已經在「{ev['title']}」名單裡了。")
         return
 
-    num, person_name = match_command_number_name(text, "代報")
-    if num is not None:
+    # 代報可一次多人：支援空格、頓號、逗號、分號、斜線、換行
+    m = re.match(r"^代報\s*(\d+)\s+(.+)$", text, flags=re.S)
+    if m:
+        num = int(m.group(1))
+        raw_names = m.group(2).strip()
+
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
-        ok = add_signup(
-            ev["id"], person_name, "proxy",
-            proxy_by_user_id=user_id, proxy_by_name=user_name
-        )
-        if not ok:
-            reply(reply_token, f"{person_name} 已經在「{ev['title']}」名單裡了。")
+
+        names = split_names(raw_names)
+        if not names:
+            reply(
+                reply_token,
+                "請輸入至少一個姓名。\n例如：代報1 王小明 李小華 陳大華"
+            )
+            return
+
+        duplicated = []
+        added_count = 0
+
+        for person_name in names:
+            ok = add_signup(
+                ev["id"], person_name, "proxy",
+                proxy_by_user_id=user_id, proxy_by_name=user_name
+            )
+            if ok:
+                added_count += 1
+            else:
+                duplicated.append(person_name)
+
+        # 成功仍維持靜默；只有發生重複時才回一則摘要
+        if duplicated:
+            reply(
+                reply_token,
+                f"以下 {len(duplicated)} 位已經在「{ev['title']}」名單裡：\n"
+                + "、".join(duplicated)
+                + (f"\n其餘 {added_count} 位已成功加入。" if added_count else "")
+            )
         return
+
     elif text.startswith("代報"):
-        reply(reply_token, "格式：代報1 王小明\n（代報 1 王小明 也可以）")
+        reply(
+            reply_token,
+            "格式：代報1 王小明 李小華 陳大華\n"
+            "也可以用頓號、逗號、分號、斜線或換行。"
+        )
         return
 
     num = match_command_number(text, "取消報名")

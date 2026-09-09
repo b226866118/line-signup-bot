@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import base64
 import sqlite3
+import re
 from datetime import datetime
 
 import requests
@@ -205,15 +206,32 @@ def event_list_text(group_id: str):
         count = len(list_signups(ev["id"]))
         lines.append(f"{i}. {ev['title']}（{count} 人）")
     lines.append("")
-    lines.append("例如：報名 1／代報 1 王小明／名單 1")
+    lines.append("例如：報名1／代報1 王小明／名單1")
     return "\n".join(lines)
 
 
-def parse_number(parts, index=1):
-    try:
-        return int(parts[index])
-    except (ValueError, IndexError):
-        return None
+def match_command_number(text: str, command: str):
+    """
+    同時接受：
+      報名1 / 報名 1
+      名單2 / 名單 2
+      取消報名3 / 取消報名 3
+      結束1 / 結束 1
+    """
+    m = re.fullmatch(rf"{re.escape(command)}\s*(\d+)", text)
+    return int(m.group(1)) if m else None
+
+
+def match_command_number_name(text: str, command: str):
+    """
+    同時接受：
+      代報1 王小明 / 代報 1 王小明
+      取消1 王小明 / 取消 1 王小明
+    """
+    m = re.fullmatch(rf"{re.escape(command)}\s*(\d+)\s+(.+)", text)
+    if not m:
+        return None, None
+    return int(m.group(1)), m.group(2).strip()
 
 
 HELP_TEXT = """【活動報名 Bot｜多活動版】
@@ -225,23 +243,59 @@ HELP_TEXT = """【活動報名 Bot｜多活動版】
 活動
 
 本人報名：
-報名 1
+報名1
+（報名 1 也可以）
 
 代報：
-代報 1 王小明
+代報1 王小明
+（代報 1 王小明 也可以）
 
 取消自己的報名：
-取消報名 1
+取消報名1
 
 取消指定姓名：
-取消 1 王小明
+取消1 王小明
 
-查看名單：
-名單 1
+查看單一活動名單：
+名單1
+
+查看全部活動名單：
+全部名單
 
 結束活動：
-結束 1
+結束1
 """
+
+
+
+def all_signup_lists_text(group_id: str):
+    events = list_active_events(group_id)
+    if not events:
+        return "目前沒有進行中的活動。"
+
+    sections = []
+    total_people = 0
+
+    for i, ev in enumerate(events, 1):
+        rows = list_signups(ev["id"])
+        total_people += len(rows)
+
+        lines = [f"【{i}. {ev['title']}】", f"共 {len(rows)} 人"]
+        if not rows:
+            lines.append("目前尚無人報名")
+        else:
+            for j, row in enumerate(rows, 1):
+                if row["signup_type"] == "proxy":
+                    lines.append(
+                        f"{j}. {row['person_name']}（{row['proxy_by_name']} 代報）"
+                    )
+                else:
+                    lines.append(f"{j}. {row['person_name']}")
+
+        sections.append("\n".join(lines))
+
+    header = f"📋 全部活動報名名單\n目前 {len(events)} 個活動，共 {total_people} 筆報名\n"
+    return header + "\n\n".join(sections)
 
 
 def handle_group_text(event):
@@ -274,13 +328,9 @@ def handle_group_text(event):
         reply(reply_token, event_list_text(group_id))
         return
 
-    parts = text.split()
-
-    if parts and parts[0] == "報名":
-        num = parse_number(parts)
-        if num is None:
-            reply(reply_token, "請輸入活動編號，例如：報名 1")
-            return
+    # 以下指令同時支援「有空格」與「沒空格」
+    num = match_command_number(text, "報名")
+    if num is not None:
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
@@ -293,16 +343,12 @@ def handle_group_text(event):
         )
         return
 
-    if parts and parts[0] == "代報":
-        num = parse_number(parts)
-        if num is None or len(parts) < 3:
-            reply(reply_token, "格式：代報 活動編號 姓名\n例如：代報 1 王小明")
-            return
+    num, person_name = match_command_number_name(text, "代報")
+    if num is not None:
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
-        person_name = " ".join(parts[2:]).strip()
         ok = add_signup(
             ev["id"], person_name, "proxy",
             proxy_by_user_id=user_id, proxy_by_name=user_name
@@ -313,12 +359,12 @@ def handle_group_text(event):
             if ok else f"{person_name} 已經在「{ev['title']}」名單裡了。"
         )
         return
+    elif text.startswith("代報"):
+        reply(reply_token, "格式：代報1 王小明\n（代報 1 王小明 也可以）")
+        return
 
-    if parts and parts[0] == "取消報名":
-        num = parse_number(parts)
-        if num is None:
-            reply(reply_token, "請輸入活動編號，例如：取消報名 1")
-            return
+    num = match_command_number(text, "取消報名")
+    if num is not None:
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
@@ -330,17 +376,16 @@ def handle_group_text(event):
             if ok else f"找不到你在「{ev['title']}」的本人報名紀錄。"
         )
         return
+    elif text.startswith("取消報名"):
+        reply(reply_token, "請輸入活動編號，例如：取消報名1")
+        return
 
-    if parts and parts[0] == "取消":
-        num = parse_number(parts)
-        if num is None or len(parts) < 3:
-            reply(reply_token, "格式：取消 活動編號 姓名\n例如：取消 1 王小明")
-            return
+    num, person_name = match_command_number_name(text, "取消")
+    if num is not None:
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
-        person_name = " ".join(parts[2:]).strip()
         ok = remove_signup(ev["id"], person_name)
         reply(
             reply_token,
@@ -348,12 +393,16 @@ def handle_group_text(event):
             if ok else f"「{ev['title']}」名單中找不到：{person_name}"
         )
         return
+    elif text.startswith("取消"):
+        reply(reply_token, "格式：取消1 王小明\n（取消 1 王小明 也可以）")
+        return
 
-    if parts and parts[0] == "名單":
-        num = parse_number(parts)
-        if num is None:
-            reply(reply_token, "請輸入活動編號，例如：名單 1")
-            return
+    if text in ("全部名單", "所有名單"):
+        reply(reply_token, all_signup_lists_text(group_id))
+        return
+
+    num = match_command_number(text, "名單")
+    if num is not None:
         ev = get_event_by_number(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
@@ -370,17 +419,20 @@ def handle_group_text(event):
                 lines.append(f"{i}. {row['person_name']}")
         reply(reply_token, "\n".join(lines))
         return
+    elif text.startswith("名單"):
+        reply(reply_token, "請輸入活動編號，例如：名單1")
+        return
 
-    if parts and parts[0] == "結束":
-        num = parse_number(parts)
-        if num is None:
-            reply(reply_token, "請輸入活動編號，例如：結束 1")
-            return
+    num = match_command_number(text, "結束")
+    if num is not None:
         ev = close_event(group_id, num)
         if not ev:
             reply(reply_token, "找不到這個活動編號，請先輸入「活動」查看。")
             return
         reply(reply_token, f"✅ 已結束活動：{ev['title']}\n\n" + event_list_text(group_id))
+        return
+    elif text.startswith("結束"):
+        reply(reply_token, "請輸入活動編號，例如：結束1")
         return
 
 

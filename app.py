@@ -701,8 +701,33 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </style>
 </head>
 <body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div>
-<div id="adminTools" class="card" style="display:none"><div class="title">活動管理</div><div class="actions" style="grid-template-columns:1fr 1fr"><button class="primary" onclick="openCreate()">＋ 新增活動</button><button class="light" onclick="toggleCloseMode()">結束活動</button></div><div id="closeModeHint" style="display:none;color:#a22;margin-top:10px;font-size:14px">請在下方活動卡片按「結束此活動」。</div></div>
+<div id="adminTools" class="card" style="display:none">
+<div class="title">活動管理</div>
+<div class="actions" style="grid-template-columns:1fr 1fr">
+<button class="primary" onclick="openCreate()">＋ 新增活動</button>
+<button class="light" onclick="toggleEditMode()">編輯活動</button>
+<button class="light" onclick="toggleCloseMode()">結束活動</button>
+</div>
+<div id="editModeHint" style="display:none;color:#1769aa;margin-top:10px;font-size:14px">請在下方活動卡片按「編輯此活動」。</div>
+<div id="closeModeHint" style="display:none;color:#a22;margin-top:10px;font-size:14px">請在下方活動卡片按「結束此活動」。</div>
+</div>
 <div id="events">載入活動中…</div></div>
+<dialog id="editDialog"><div class="modal">
+<h3>編輯活動</h3>
+<input type="hidden" id="editEventId">
+<label>活動名稱 *</label><input id="editTitle">
+<label>活動日期</label><input id="editDate" type="date">
+<label>地點</label><input id="editLocation">
+<label>報名截止日</label><input id="editDeadline" type="date">
+<label>活動說明</label><textarea id="editDescription" rows="5"></textarea>
+<label>目前 DM</label>
+<img id="editCurrentDM" class="dm" style="display:none">
+<div id="editNoDM" style="font-size:13px;color:#888;margin-bottom:8px">目前沒有 DM</div>
+<label>更換 DM（可留空）</label><input id="editDM" type="file" accept="image/*">
+<div style="font-size:12px;color:#888;margin:-4px 0 12px">不選新圖片就保留原本 DM。</div>
+<button class="primary" style="width:100%" onclick="submitEdit(this)">儲存修改</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="editDialog.close()">取消</button>
+</div></dialog>
 <dialog id="createDialog"><div class="modal">
 <h3>新增活動</h3>
 <label>活動名稱 *</label><input id="newTitle" placeholder="例如：9/20 新民班">
@@ -749,7 +774,7 @@ function getLiffParams(){
 
 const lp=getLiffParams();
 const groupId=lp.g, sig=lp.s;
-let profile=null, proxyEventId=null, adminMode=false, closeMode=false;
+let profile=null, proxyEventId=null, adminMode=false, closeMode=false, editMode=false;
 function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.dataset.old=btn.textContent;btn.textContent=label;btn.disabled=true;btn.style.opacity='.6'}else{btn.textContent=btn.dataset.old||btn.textContent;btn.disabled=false;btn.style.opacity='1'}}
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
@@ -798,6 +823,10 @@ try{
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
+      ${adminMode&&editMode
+        ? `<button class="secondary" style="width:100%;margin-top:10px"
+             onclick="openEdit(${ev.id})">編輯此活動</button>`
+        : ''}
       ${adminMode&&closeMode
         ? `<button class="light" style="width:100%;margin-top:10px;color:#a22"
              onclick="closeEvent(${ev.id},'${safeTitle}')">結束此活動</button>`
@@ -839,8 +868,86 @@ try{
 }catch(e){showMsg(e.message,false)}
 finally{setBusy(btn,false)}
 }
-function toggleCloseMode(){closeMode=!closeMode;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';loadEvents()}
+function toggleEditMode(){
+  editMode=!editMode;
+  if(editMode) closeMode=false;
+  document.getElementById('editModeHint').style.display=editMode?'block':'none';
+  document.getElementById('closeModeHint').style.display='none';
+  loadEvents();
+}
+function toggleCloseMode(){closeMode=!closeMode;if(closeMode)editMode=false;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';document.getElementById('editModeHint').style.display='none';loadEvents()}
 async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」嗎？'))return;try{const d=await api('/api/liff/events/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+async function openEdit(id){
+  try{
+    const d=await api('/api/liff/event?event_id='+id);
+    const ev=d.event;
+
+    document.getElementById('editEventId').value=ev.id;
+    document.getElementById('editTitle').value=ev.title||'';
+    document.getElementById('editDate').value=ev.event_date||'';
+    document.getElementById('editLocation').value=ev.location||'';
+    document.getElementById('editDeadline').value=ev.registration_deadline||'';
+    document.getElementById('editDescription').value=ev.description||'';
+    document.getElementById('editDM').value='';
+
+    const img=document.getElementById('editCurrentDM');
+    const no=document.getElementById('editNoDM');
+    if(ev.dm_image_url){
+      img.src=ev.dm_image_url;
+      img.style.display='block';
+      no.style.display='none';
+    }else{
+      img.removeAttribute('src');
+      img.style.display='none';
+      no.style.display='block';
+    }
+
+    editDialog.showModal();
+  }catch(e){
+    showMsg(e.message,false);
+  }
+}
+
+async function submitEdit(btn){
+  const eventId=document.getElementById('editEventId').value;
+  const title=document.getElementById('editTitle').value.trim();
+
+  if(!title){
+    showMsg('請輸入活動名稱',false);
+    return;
+  }
+
+  setBusy(btn,true,'儲存中…');
+
+  try{
+    const fd=new FormData();
+    fd.append('event_id',eventId);
+    fd.append('title',title);
+    fd.append('event_date',document.getElementById('editDate').value);
+    fd.append('location',document.getElementById('editLocation').value.trim());
+    fd.append('registration_deadline',document.getElementById('editDeadline').value);
+    fd.append('description',document.getElementById('editDescription').value.trim());
+    fd.append('user_id',profile.userId);
+
+    const file=document.getElementById('editDM').files[0];
+    if(file) fd.append('dm',file);
+
+    const d=await api('/api/liff/events/update',{
+      method:'POST',
+      body:fd
+    });
+
+    editDialog.close();
+    showMsg(d.message,true);
+    await loadEvents();
+
+  }catch(e){
+    showMsg(e.message,false);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+
 async function showDetail(id){
 try{
   const d=await api('/api/liff/event?event_id='+id);
@@ -931,6 +1038,72 @@ def api_liff_create_event():
         return jsonify({"error": f"建立活動失敗：{str(e)}"}), 500
 
     return jsonify({"message": f"已新增活動：{title}"})
+
+
+@app.route("/api/liff/events/update", methods=["POST"])
+def api_liff_update_event():
+    group_id = require_group_from_request()
+
+    user_id = str(request.form.get("user_id", "")).strip()
+    event_id = int(request.form.get("event_id", "0") or 0)
+    title = str(request.form.get("title", "")).strip()
+    event_date = str(request.form.get("event_date", "")).strip() or None
+    location = str(request.form.get("location", "")).strip() or None
+    registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
+    description = str(request.form.get("description", "")).strip() or None
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    if not title:
+        return jsonify({"error": "請輸入活動名稱"}), 400
+
+    dm_image_url = ev.get("dm_image_url")
+    dm = request.files.get("dm")
+
+    try:
+        if dm and dm.filename:
+            dm_image_url = upload_dm_to_supabase(dm)
+
+        conn = db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE line_events
+            SET title=%s,
+                event_date=%s,
+                location=%s,
+                registration_deadline=%s,
+                description=%s,
+                dm_image_url=%s
+            WHERE id=%s AND group_id=%s
+            """,
+            (
+                title,
+                event_date,
+                location,
+                registration_deadline,
+                description,
+                dm_image_url,
+                event_id,
+                group_id,
+            ),
+        )
+        conn.commit()
+        cur.close()
+        release_db(conn)
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Update event failed")
+        return jsonify({"error": f"更新活動失敗：{str(e)}"}), 500
+
+    return jsonify({"message": f"已更新活動：{title}"})
 
 
 @app.route("/api/liff/events/close", methods=["POST"])

@@ -58,6 +58,8 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS description TEXT")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS dm_image_url TEXT")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_deadline DATE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'general'")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS attendance_option TEXT")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -185,6 +187,7 @@ def create_event(
     description=None,
     dm_image_url=None,
     registration_deadline=None,
+    event_type="general",
 ):
     conn = db()
     cur = conn.cursor()
@@ -192,9 +195,9 @@ def create_event(
         """
         INSERT INTO line_events(
             group_id, title, active, created_at,
-            event_date, location, description, dm_image_url, registration_deadline
+            event_date, location, description, dm_image_url, registration_deadline, event_type
         )
-        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -206,6 +209,7 @@ def create_event(
             description or None,
             dm_image_url or None,
             registration_deadline or None,
+            event_type or "general",
         ),
     )
     event_id = cur.fetchone()[0]
@@ -315,7 +319,8 @@ def get_signup_count(event_id: int):
 
 
 def add_signup(event_id: int, person_name: str, signup_type: str,
-               line_user_id=None, proxy_by_user_id=None, proxy_by_name=None):
+               line_user_id=None, proxy_by_user_id=None, proxy_by_name=None,
+               attendance_option=None):
     conn = db()
     cur = conn.cursor()
     try:
@@ -323,12 +328,12 @@ def add_signup(event_id: int, person_name: str, signup_type: str,
             """
             INSERT INTO line_signups(
                 event_id, person_name, line_user_id, signup_type,
-                proxy_by_user_id, proxy_by_name, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                proxy_by_user_id, proxy_by_name, created_at, attendance_option
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 event_id, person_name, line_user_id, signup_type,
-                proxy_by_user_id, proxy_by_name, datetime.now(),
+                proxy_by_user_id, proxy_by_name, datetime.now(), attendance_option,
             ),
         )
         conn.commit()
@@ -716,6 +721,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <h3>編輯活動</h3>
 <input type="hidden" id="editEventId">
 <label>活動名稱 *</label><input id="editTitle">
+<label>活動類型</label>
+<select id="editType" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
 <label>活動日期</label><input id="editDate" type="date">
 <label>地點</label><input id="editLocation">
 <label>報名截止日</label><input id="editDeadline" type="date">
@@ -731,6 +738,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <dialog id="createDialog"><div class="modal">
 <h3>新增活動</h3>
 <label>活動名稱 *</label><input id="newTitle" placeholder="例如：9/20 新民班">
+<label>活動類型</label>
+<select id="newType" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
 <label>活動日期</label><input id="newDate" type="date">
 <label>地點</label><input id="newLocation" placeholder="例如：崇德大樓">
 <label>報名截止日</label><input id="newDeadline" type="date">
@@ -740,6 +749,7 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <button class="primary" style="width:100%" onclick="submitCreate(this)">建立活動</button>
 <button class="light" style="width:100%;margin-top:8px" onclick="createDialog.close()">取消</button>
 </div></dialog>
+<dialog id="dharmaDialog"><div class="modal"><h3 id="dharmaTitle">法會報名</h3><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0"><button class="light" onclick="submitDharma(this,'上兩天')">上兩天</button><button class="light" onclick="submitDharma(this,'第一天')">第一天</button><button class="light" onclick="submitDharma(this,'補第二天')">補第二天</button><button class="light" onclick="submitDharma(this,'加開第一天')">加開第一天</button></div><button class="light" style="width:100%" onclick="dharmaDialog.close()">取消</button></div></dialog>
 <dialog id="detailDialog"><div class="modal">
 <h3 id="detailTitle">活動詳情</h3>
 <img id="detailDM" class="dm" style="display:none">
@@ -747,7 +757,7 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <div id="detailDesc" class="desc"></div>
 <button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
 </div></dialog>
-<dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy()">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
+<dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><div id="proxyDharmaOptions" style="display:none"><label>參加方式</label><select id="proxyAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option></select></div><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy(this)">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
 const LIFF_ID="__LIFF_ID__";
@@ -774,7 +784,7 @@ function getLiffParams(){
 
 const lp=getLiffParams();
 const groupId=lp.g, sig=lp.s;
-let profile=null, proxyEventId=null, adminMode=false, closeMode=false, editMode=false;
+let profile=null, proxyEventId=null, proxyEventType="general", adminMode=false, closeMode=false, editMode=false, dharmaEventId=null;
 function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.dataset.old=btn.textContent;btn.textContent=label;btn.disabled=true;btn.style.opacity='.6'}else{btn.textContent=btn.dataset.old||btn.textContent;btn.disabled=false;btn.style.opacity='1'}}
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
@@ -798,6 +808,7 @@ try{
     ].filter(Boolean).join('　');
 
     const safeTitle=String(ev.title).replace(/'/g,"\\'");
+    const typeBadge=ev.event_type==='dharma'?'<div class="meta">法會｜請選擇參加方式</div>':'';
 
     // DM 直接顯示在卡片上；點圖片可開啟完整詳情
     const img=ev.dm_image_url
@@ -811,6 +822,7 @@ try{
 
     return `<div class="card">
       <div class="title">${esc(ev.title)}</div>
+      ${typeBadge}
       ${meta ? `<div class="meta">${meta}</div>` : ''}
       ${img}
       ${shortDesc}
@@ -818,8 +830,8 @@ try{
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
-        <button class="primary" onclick="selfSignup(${ev.id},this)">本人報名</button>
-        <button class="secondary" onclick="openProxy(${ev.id},'${safeTitle}')">代人報名</button>
+        <button class="primary" onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`}">本人報名</button>
+        <button class="secondary" onclick="openProxy(${ev.id},'${safeTitle}','${ev.event_type||'general'}')">代人報名</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
@@ -840,6 +852,7 @@ try{
 
 function openCreate(){
 document.getElementById('newTitle').value='';
+document.getElementById('newType').value='general';
 document.getElementById('newDate').value='';
 document.getElementById('newLocation').value='';
 document.getElementById('newDeadline').value='';
@@ -854,6 +867,7 @@ setBusy(btn,true,'建立中…');
 try{
   const fd=new FormData();
   fd.append('title',title);
+  fd.append('event_type',document.getElementById('newType').value);
   fd.append('event_date',document.getElementById('newDate').value);
   fd.append('location',document.getElementById('newLocation').value.trim());
   fd.append('registration_deadline',document.getElementById('newDeadline').value);
@@ -884,6 +898,7 @@ async function openEdit(id){
 
     document.getElementById('editEventId').value=ev.id;
     document.getElementById('editTitle').value=ev.title||'';
+    document.getElementById('editType').value=ev.event_type||'general';
     document.getElementById('editDate').value=ev.event_date||'';
     document.getElementById('editLocation').value=ev.location||'';
     document.getElementById('editDeadline').value=ev.registration_deadline||'';
@@ -923,6 +938,7 @@ async function submitEdit(btn){
     const fd=new FormData();
     fd.append('event_id',eventId);
     fd.append('title',title);
+    fd.append('event_type',document.getElementById('editType').value);
     fd.append('event_date',document.getElementById('editDate').value);
     fd.append('location',document.getElementById('editLocation').value.trim());
     fd.append('registration_deadline',document.getElementById('editDeadline').value);
@@ -954,6 +970,7 @@ try{
   const ev=d.event;
   document.getElementById('detailTitle').textContent=ev.title;
   const meta=[
+    ev.event_type==='dharma' ? '類型：法會' : '',
     ev.event_date ? '📅 '+ev.event_date : '',
     ev.location ? '📍 '+ev.location : '',
     ev.registration_deadline ? '報名截止：'+ev.registration_deadline : ''
@@ -967,9 +984,11 @@ try{
 }catch(e){showMsg(e.message,false)}
 }
 
+function openDharma(id,title){dharmaEventId=id;document.getElementById('dharmaTitle').textContent='法會報名｜'+title;dharmaDialog.showModal()}
+async function submitDharma(btn,opt){setBusy(btn,true,'送出中…');try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:dharmaEventId,user_id:profile.userId,display_name:profile.displayName,attendance_option:opt})});dharmaDialog.close();showMsg(d.message);await loadEvents()}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
-function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
-async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+function openProxy(id,title,eventType){proxyEventId=id;proxyEventType=eventType||'general';document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';document.getElementById('proxyDharmaOptions').style.display=proxyEventType==='dharma'?'block':'none';proxyDialog.showModal()}
+async function submitProxy(btn){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}setBusy(btn,true,'送出中…');try{const body={event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName};if(proxyEventType==='dharma')body.attendance_option=document.getElementById('proxyAttendance').value;const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});proxyDialog.close();showMsg(d.message);await loadEvents()}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id+'&user_id='+encodeURIComponent(profile.userId));document.getElementById('listTitle').textContent='報名名單｜'+title;if(!d.people.length){document.getElementById('listBody').innerHTML='目前尚無人報名'}else{document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{const b=p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${esc(p.label)}</span>${b}</div>`}).join('')}listDialog.showModal()}catch(e){showMsg(e.message,false)}}
 async function cancelSignup(eventId,signupId,name,title){if(!confirm('確定要取消「'+name+'」的報名嗎？'))return;try{const d=await api('/api/liff/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:eventId,signup_id:signupId,user_id:profile.userId})});showMsg(d.message);await showList(eventId,title);await loadEvents()}catch(e){showMsg(e.message,false)}}
 init();
@@ -1004,6 +1023,7 @@ def api_liff_create_event():
     # 此頁用 multipart/form-data，才能同時送文字與 DM 圖片
     user_id = str(request.form.get("user_id", "")).strip()
     title = str(request.form.get("title", "")).strip()
+    event_type = str(request.form.get("event_type", "general")).strip() or "general"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -1030,6 +1050,7 @@ def api_liff_create_event():
             description=description,
             dm_image_url=dm_image_url,
             registration_deadline=registration_deadline,
+            event_type=event_type,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1047,6 +1068,7 @@ def api_liff_update_event():
     user_id = str(request.form.get("user_id", "")).strip()
     event_id = int(request.form.get("event_id", "0") or 0)
     title = str(request.form.get("title", "")).strip()
+    event_type = str(request.form.get("event_type", "general")).strip() or "general"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -1079,7 +1101,8 @@ def api_liff_update_event():
                 location=%s,
                 registration_deadline=%s,
                 description=%s,
-                dm_image_url=%s
+                dm_image_url=%s,
+                event_type=%s
             WHERE id=%s AND group_id=%s
             """,
             (
@@ -1089,6 +1112,7 @@ def api_liff_update_event():
                 registration_deadline,
                 description,
                 dm_image_url,
+                event_type,
                 event_id,
                 group_id,
             ),
@@ -1141,6 +1165,7 @@ def api_liff_events():
             "description": ev.get("description"),
             "dm_image_url": ev.get("dm_image_url"),
             "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
+            "event_type": ev.get("event_type") or "general",
         })
 
     return jsonify({"events": result})
@@ -1164,6 +1189,7 @@ def api_liff_event_detail():
             "description": ev.get("description"),
             "dm_image_url": ev.get("dm_image_url"),
             "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
+            "event_type": ev.get("event_type") or "general",
         }
     })
 
@@ -1178,9 +1204,15 @@ def api_liff_signup():
         return jsonify({"error": "找不到活動"}), 404
     user_id = str(data.get("user_id", "")).strip()
     display_name = str(data.get("display_name", "")).strip()
+    attendance_option = str(data.get("attendance_option", "")).strip() or None
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
-    if not add_signup(event_id, display_name, "self", line_user_id=user_id):
+    if (ev.get("event_type") or "general") == "dharma":
+        if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
+            return jsonify({"error": "請選擇法會參加方式"}), 400
+    else:
+        attendance_option = None
+    if not add_signup(event_id, display_name, "self", line_user_id=user_id, attendance_option=attendance_option):
         return jsonify({"error": f"{display_name} 已經報名過了"}), 409
     return jsonify({"message": "報名成功"})
 
@@ -1198,9 +1230,15 @@ def api_liff_proxy():
         return jsonify({"error": "請輸入至少一個姓名"}), 400
     display_name = str(data.get("display_name", "")).strip()
     user_id = str(data.get("user_id", "")).strip()
+    attendance_option = str(data.get("attendance_option", "")).strip() or None
+    if (ev.get("event_type") or "general") == "dharma":
+        if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
+            return jsonify({"error": "請選擇法會參加方式"}), 400
+    else:
+        attendance_option = None
     added, dup = 0, []
     for name in names:
-        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name):
+        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name, attendance_option=attendance_option):
             added += 1
         else:
             dup.append(name)
@@ -1221,12 +1259,14 @@ def api_liff_list():
     people = []
     for row in list_signups(event_id):
         if row["signup_type"] == "proxy":
-            label = f"{row['person_name']}（{row['proxy_by_name']} 代報）"
+            opt = f"｜{row['attendance_option']}" if row.get("attendance_option") else ""
+            label = f"{row['person_name']}{opt}（{row['proxy_by_name']} 代報）"
             can_cancel = bool(
                 user_id and row["proxy_by_user_id"] == user_id
             )
         else:
-            label = row["person_name"]
+            opt = f"｜{row['attendance_option']}" if row.get("attendance_option") else ""
+            label = f"{row['person_name']}{opt}"
             can_cancel = bool(
                 user_id and row["line_user_id"] == user_id
             )

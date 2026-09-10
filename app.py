@@ -301,6 +301,41 @@ def remove_self_signup(event_id: int, user_id: str):
     return ok
 
 
+def get_signup_by_id(event_id: int, signup_id: int):
+    conn = db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM line_signups WHERE id=%s AND event_id=%s",
+        (signup_id, event_id),
+    )
+    row = cur.fetchone()
+    cur.close()
+    release_db(conn)
+    return row
+
+
+def remove_owned_signup(event_id: int, signup_id: int, user_id: str):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        DELETE FROM line_signups
+        WHERE id=%s
+          AND event_id=%s
+          AND (
+                (signup_type='self' AND line_user_id=%s)
+             OR (signup_type='proxy' AND proxy_by_user_id=%s)
+          )
+        """,
+        (signup_id, event_id, user_id, user_id),
+    )
+    ok = cur.rowcount > 0
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return ok
+
+
 def close_event(group_id: str, number: int):
     ev = get_event_by_number(group_id, number)
     if not ev:
@@ -637,7 +672,8 @@ async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」�
 async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
 async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
-async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id);document.getElementById('listTitle').textContent='報名名單｜'+title;document.getElementById('listBody').innerHTML=d.people.length?d.people.map((p,i)=>`${i+1}. ${esc(p)}`).join('<br>'):'目前尚無人報名';listDialog.showModal()}catch(e){showMsg(e.message,false)}}
+async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id+'&user_id='+encodeURIComponent(profile.userId));document.getElementById('listTitle').textContent='報名名單｜'+title;if(!d.people.length){document.getElementById('listBody').innerHTML='目前尚無人報名'}else{document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{const b=p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${esc(p.label)}</span>${b}</div>`}).join('')}listDialog.showModal()}catch(e){showMsg(e.message,false)}}
+async function cancelSignup(eventId,signupId,name,title){if(!confirm('確定要取消「'+name+'」的報名嗎？'))return;try{const d=await api('/api/liff/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:eventId,signup_id:signupId,user_id:profile.userId})});showMsg(d.message);await showList(eventId,title);await loadEvents()}catch(e){showMsg(e.message,false)}}
 init();
 </script></body></html>"""
 
@@ -750,16 +786,62 @@ def api_liff_proxy():
 def api_liff_list():
     group_id = require_group_from_request()
     event_id = int(request.args.get("event_id", "0") or 0)
+    user_id = request.args.get("user_id", "")
+
     ev = get_event_by_id(group_id, event_id)
     if not ev:
         return jsonify({"error": "找不到活動"}), 404
+
     people = []
     for row in list_signups(event_id):
         if row["signup_type"] == "proxy":
-            people.append(f"{row['person_name']}（{row['proxy_by_name']} 代報）")
+            label = f"{row['person_name']}（{row['proxy_by_name']} 代報）"
+            can_cancel = bool(
+                user_id and row["proxy_by_user_id"] == user_id
+            )
         else:
-            people.append(row["person_name"])
+            label = row["person_name"]
+            can_cancel = bool(
+                user_id and row["line_user_id"] == user_id
+            )
+
+        people.append({
+            "id": row["id"],
+            "name": row["person_name"],
+            "label": label,
+            "can_cancel": can_cancel,
+        })
+
     return jsonify({"people": people})
+
+
+@app.route("/api/liff/cancel", methods=["POST"])
+def api_liff_cancel():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+
+    event_id = int(data.get("event_id", 0) or 0)
+    signup_id = int(data.get("signup_id", 0) or 0)
+    user_id = str(data.get("user_id", "")).strip()
+
+    if not user_id:
+        return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    row = get_signup_by_id(event_id, signup_id)
+    if not row:
+        return jsonify({"error": "找不到這筆報名"}), 404
+
+    if not remove_owned_signup(event_id, signup_id, user_id):
+        return jsonify({"error": "你只能取消自己報名或自己代報的人"}), 403
+
+    return jsonify({
+        "message": f"已取消：{row['person_name']}",
+        "count": get_signup_count(event_id),
+    })
 
 
 @app.route("/callback", methods=["POST"])

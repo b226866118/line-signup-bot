@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import base64
 import re
+import uuid
 from datetime import datetime
 from urllib.parse import urlencode
 
@@ -19,6 +20,9 @@ CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 LIFF_ID = os.environ["LIFF_ID"]
 ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()}
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+DM_BUCKET = os.environ.get("DM_BUCKET", "event-dm")
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_MEMBER_PROFILE_URL = "https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
@@ -48,6 +52,13 @@ def init_db():
         created_at TIMESTAMP NOT NULL
     );
     """)
+    # 既有 line_events 也自動補上活動詳細資料欄位
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS event_date DATE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS location TEXT")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS description TEXT")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS dm_image_url TEXT")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_deadline DATE")
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
         id SERIAL PRIMARY KEY,
@@ -166,22 +177,82 @@ def get_member_name(group_id: str, user_id: str) -> str:
     return "未知使用者"
 
 
-def create_event(group_id: str, title: str):
+def create_event(
+    group_id: str,
+    title: str,
+    event_date=None,
+    location=None,
+    description=None,
+    dm_image_url=None,
+    registration_deadline=None,
+):
     conn = db()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO line_events(group_id, title, active, created_at)
-        VALUES (%s, %s, TRUE, %s)
+        INSERT INTO line_events(
+            group_id, title, active, created_at,
+            event_date, location, description, dm_image_url, registration_deadline
+        )
+        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (group_id, title, datetime.now()),
+        (
+            group_id,
+            title,
+            datetime.now(),
+            event_date or None,
+            location or None,
+            description or None,
+            dm_image_url or None,
+            registration_deadline or None,
+        ),
     )
     event_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
     release_db(conn)
     return event_id
+
+
+def upload_dm_to_supabase(file_storage):
+    """將 DM 圖片上傳到 Supabase Storage 的公開 bucket。"""
+    if not file_storage or not file_storage.filename:
+        return None
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("尚未設定 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY")
+
+    content_type = file_storage.mimetype or ""
+    if not content_type.startswith("image/"):
+        raise ValueError("DM 只能上傳圖片檔")
+
+    data = file_storage.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise ValueError("DM 圖片請控制在 5MB 以內")
+
+    ext_map = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }
+    ext = ext_map.get(content_type, ".jpg")
+    object_name = f"{uuid.uuid4().hex}{ext}"
+
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/{DM_BUCKET}/{object_name}"
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Content-Type": content_type,
+        "x-upsert": "false",
+    }
+
+    r = requests.post(upload_url, headers=headers, data=data, timeout=30)
+    if not r.ok:
+        raise RuntimeError(f"DM 上傳失敗：{r.status_code} {r.text[:200]}")
+
+    return f"{SUPABASE_URL}/storage/v1/object/public/{DM_BUCKET}/{object_name}"
 
 
 def list_active_events(group_id: str):
@@ -621,16 +692,34 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0
 .wrap{max-width:720px;margin:auto;padding:18px}h1{font-size:24px;margin:4px 0}.sub{color:#777;margin:4px 0 16px}
 .card{background:#fff;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 1px 6px rgba(0,0,0,.08)}
 .title{font-size:19px;font-weight:700}.count{font-size:14px;color:#666;margin:7px 0 13px}
-.actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}button{border:0;border-radius:10px;padding:11px 6px;font-size:15px}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}button{border:0;border-radius:10px;padding:11px 6px;font-size:15px}
 .primary{background:#06c755;color:#fff}.secondary{background:#e8f1ff;color:#1769aa}.light{background:#eee;color:#333}
 .msg{display:none;margin:10px 0;padding:10px;border-radius:10px}.ok{display:block;background:#e8f8ee;color:#17723b}.err{display:block;background:#fdecec;color:#a22}
-dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}textarea,input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
+dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}.meta{font-size:14px;color:#666;line-height:1.6;margin:8px 0}.desc{font-size:14px;line-height:1.6;margin:8px 0 12px;white-space:pre-wrap}.dm{width:100%;border-radius:12px;margin:8px 0 12px;display:block}label{display:block;font-size:13px;color:#666;margin-top:8px}textarea,input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
 </style>
 </head>
 <body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div>
 <div id="adminTools" class="card" style="display:none"><div class="title">活動管理</div><div class="actions" style="grid-template-columns:1fr 1fr"><button class="primary" onclick="openCreate()">＋ 新增活動</button><button class="light" onclick="toggleCloseMode()">結束活動</button></div><div id="closeModeHint" style="display:none;color:#a22;margin-top:10px;font-size:14px">請在下方活動卡片按「結束此活動」。</div></div>
 <div id="events">載入活動中…</div></div>
-<dialog id="createDialog"><div class="modal"><h3>新增活動</h3><input id="newTitle" placeholder="活動名稱，例如：9/20 新民班"><button class="primary" style="width:100%" onclick="submitCreate()">建立活動</button><button class="light" style="width:100%;margin-top:8px" onclick="createDialog.close()">取消</button></div></dialog>
+<dialog id="createDialog"><div class="modal">
+<h3>新增活動</h3>
+<label>活動名稱 *</label><input id="newTitle" placeholder="例如：9/20 新民班">
+<label>活動日期</label><input id="newDate" type="date">
+<label>地點</label><input id="newLocation" placeholder="例如：崇德大樓">
+<label>報名截止日</label><input id="newDeadline" type="date">
+<label>活動說明</label><textarea id="newDescription" rows="5" placeholder="活動內容、集合時間、注意事項等"></textarea>
+<label>DM 圖片</label><input id="newDM" type="file" accept="image/*">
+<div style="font-size:12px;color:#888;margin:-4px 0 12px">可不傳；建議 JPG/PNG/WebP，5MB 以內。</div>
+<button class="primary" style="width:100%" onclick="submitCreate(this)">建立活動</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="createDialog.close()">取消</button>
+</div></dialog>
+<dialog id="detailDialog"><div class="modal">
+<h3 id="detailTitle">活動詳情</h3>
+<img id="detailDM" class="dm" style="display:none">
+<div id="detailMeta" class="meta"></div>
+<div id="detailDesc" class="desc"></div>
+<button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
+</div></dialog>
 <dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy()">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
@@ -664,11 +753,93 @@ function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
-async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id},this)">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">查看名單</button></div>${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">結束此活動</button>`:''}</div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
-function openCreate(){document.getElementById('newTitle').value='';createDialog.showModal()}
-async function submitCreate(){const title=document.getElementById('newTitle').value.trim();if(!title){showMsg('請輸入活動名稱',false);return}try{const d=await api('/api/liff/events/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,user_id:profile.userId})});createDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+async function loadEvents(){
+try{
+  const d=await api('/api/liff/events');
+  const root=document.getElementById('events');
+  if(!d.events.length){
+    root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';
+    return
+  }
+  root.innerHTML=d.events.map(ev=>{
+    const meta=[
+      ev.event_date ? `📅 ${esc(ev.event_date)}` : '',
+      ev.location ? `📍 ${esc(ev.location)}` : '',
+      ev.registration_deadline ? `截止：${esc(ev.registration_deadline)}` : ''
+    ].filter(Boolean).join('　');
+    const img=ev.dm_image_url?`<img class="dm" src="${esc(ev.dm_image_url)}" alt="活動DM">`:'';
+    const shortDesc=ev.description?`<div class="desc">${esc(ev.description.length>80?ev.description.slice(0,80)+'…':ev.description)}</div>`:'';
+    const safeTitle=String(ev.title).replace(/'/g,"\\'");
+    return `<div class="card">
+      <div class="title">${esc(ev.title)}</div>
+      ${meta?`<div class="meta">${meta}</div>`:''}
+      ${img}
+      ${shortDesc}
+      <div class="count">目前 ${ev.count} 人報名</div>
+      <div class="actions">
+        <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
+        <button class="primary" onclick="selfSignup(${ev.id},this)">本人報名</button>
+        <button class="secondary" onclick="openProxy(${ev.id},'${safeTitle}')">代人報名</button>
+        <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
+      </div>
+      ${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${safeTitle}')">結束此活動</button>`:''}
+    </div>`
+  }).join('')
+}catch(e){
+  document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)
+}}
+
+function openCreate(){
+document.getElementById('newTitle').value='';
+document.getElementById('newDate').value='';
+document.getElementById('newLocation').value='';
+document.getElementById('newDeadline').value='';
+document.getElementById('newDescription').value='';
+document.getElementById('newDM').value='';
+createDialog.showModal()
+}
+async function submitCreate(btn){
+const title=document.getElementById('newTitle').value.trim();
+if(!title){showMsg('請輸入活動名稱',false);return}
+setBusy(btn,true,'建立中…');
+try{
+  const fd=new FormData();
+  fd.append('title',title);
+  fd.append('event_date',document.getElementById('newDate').value);
+  fd.append('location',document.getElementById('newLocation').value.trim());
+  fd.append('registration_deadline',document.getElementById('newDeadline').value);
+  fd.append('description',document.getElementById('newDescription').value.trim());
+  fd.append('user_id',profile.userId);
+  const file=document.getElementById('newDM').files[0];
+  if(file)fd.append('dm',file);
+  const d=await api('/api/liff/events/create',{method:'POST',body:fd});
+  createDialog.close();
+  showMsg(d.message);
+  loadEvents();
+}catch(e){showMsg(e.message,false)}
+finally{setBusy(btn,false)}
+}
 function toggleCloseMode(){closeMode=!closeMode;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';loadEvents()}
 async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」嗎？'))return;try{const d=await api('/api/liff/events/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+async function showDetail(id){
+try{
+  const d=await api('/api/liff/event?event_id='+id);
+  const ev=d.event;
+  document.getElementById('detailTitle').textContent=ev.title;
+  const meta=[
+    ev.event_date ? '📅 '+ev.event_date : '',
+    ev.location ? '📍 '+ev.location : '',
+    ev.registration_deadline ? '報名截止：'+ev.registration_deadline : ''
+  ].filter(Boolean).join('<br>');
+  document.getElementById('detailMeta').innerHTML=meta||'';
+  document.getElementById('detailDesc').textContent=ev.description||'目前沒有活動說明。';
+  const img=document.getElementById('detailDM');
+  if(ev.dm_image_url){img.src=ev.dm_image_url;img.style.display='block'}
+  else{img.removeAttribute('src');img.style.display='none'}
+  detailDialog.showModal()
+}catch(e){showMsg(e.message,false)}
+}
+
 async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
 async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
@@ -702,14 +873,43 @@ def api_liff_me():
 @app.route("/api/liff/events/create", methods=["POST"])
 def api_liff_create_event():
     group_id = require_group_from_request()
-    data = request.get_json(force=True)
-    user_id = str(data.get("user_id", "")).strip()
-    title = str(data.get("title", "")).strip()
+
+    # 此頁用 multipart/form-data，才能同時送文字與 DM 圖片
+    user_id = str(request.form.get("user_id", "")).strip()
+    title = str(request.form.get("title", "")).strip()
+    event_date = str(request.form.get("event_date", "")).strip() or None
+    location = str(request.form.get("location", "")).strip() or None
+    registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
+    description = str(request.form.get("description", "")).strip() or None
+
     if not is_admin(user_id):
         return jsonify({"error": "你沒有管理活動的權限"}), 403
+
     if not title:
         return jsonify({"error": "請輸入活動名稱"}), 400
-    create_event(group_id, title)
+
+    dm_image_url = None
+    dm = request.files.get("dm")
+
+    try:
+        if dm and dm.filename:
+            dm_image_url = upload_dm_to_supabase(dm)
+
+        create_event(
+            group_id=group_id,
+            title=title,
+            event_date=event_date,
+            location=location,
+            description=description,
+            dm_image_url=dm_image_url,
+            registration_deadline=registration_deadline,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app.logger.exception("Create event failed")
+        return jsonify({"error": f"建立活動失敗：{str(e)}"}), 500
+
     return jsonify({"message": f"已新增活動：{title}"})
 
 
@@ -737,9 +937,42 @@ def api_liff_close_event():
 def api_liff_events():
     group_id = require_group_from_request()
     result = []
+
     for ev in list_active_events(group_id):
-        result.append({"id": ev["id"], "title": ev["title"], "count": len(list_signups(ev["id"]))})
+        result.append({
+            "id": ev["id"],
+            "title": ev["title"],
+            "count": ev.get("signup_count", len(list_signups(ev["id"]))),
+            "event_date": ev.get("event_date").isoformat() if ev.get("event_date") else None,
+            "location": ev.get("location"),
+            "description": ev.get("description"),
+            "dm_image_url": ev.get("dm_image_url"),
+            "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
+        })
+
     return jsonify({"events": result})
+
+
+@app.route("/api/liff/event", methods=["GET"])
+def api_liff_event_detail():
+    group_id = require_group_from_request()
+    event_id = int(request.args.get("event_id", "0") or 0)
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    return jsonify({
+        "event": {
+            "id": ev["id"],
+            "title": ev["title"],
+            "event_date": ev.get("event_date").isoformat() if ev.get("event_date") else None,
+            "location": ev.get("location"),
+            "description": ev.get("description"),
+            "dm_image_url": ev.get("dm_image_url"),
+            "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
+        }
+    })
 
 
 @app.route("/api/liff/signup", methods=["POST"])

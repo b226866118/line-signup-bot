@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 import requests
 import psycopg2
 import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
 from flask import Flask, request, abort, jsonify, Response
 
 app = Flask(__name__)
@@ -23,8 +24,16 @@ LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_MEMBER_PROFILE_URL = "https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
 
 
+DB_POOL = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=DATABASE_URL)
+
+
 def db():
-    return psycopg2.connect(DATABASE_URL)
+    return DB_POOL.getconn()
+
+
+def release_db(conn):
+    if conn:
+        DB_POOL.putconn(conn)
 
 
 def init_db():
@@ -54,7 +63,7 @@ def init_db():
     """)
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -171,7 +180,7 @@ def create_event(group_id: str, title: str):
     event_id = cur.fetchone()[0]
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
     return event_id
 
 
@@ -180,17 +189,19 @@ def list_active_events(group_id: str):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
-        SELECT * FROM line_events
-        WHERE group_id = %s AND active = TRUE
-        ORDER BY id ASC
+        SELECT e.*, COUNT(s.id)::int AS signup_count
+        FROM line_events e
+        LEFT JOIN line_signups s ON s.event_id = e.id
+        WHERE e.group_id = %s AND e.active = TRUE
+        GROUP BY e.id
+        ORDER BY e.id ASC
         """,
         (group_id,),
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_db(conn)
     return rows
-
 
 def get_event_by_number(group_id: str, number: int):
     events = list_active_events(group_id)
@@ -208,7 +219,7 @@ def get_event_by_id(group_id: str, event_id: int):
     )
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    release_db(conn)
     return row
 
 
@@ -218,8 +229,18 @@ def list_signups(event_id: int):
     cur.execute("SELECT * FROM line_signups WHERE event_id = %s ORDER BY id ASC", (event_id,))
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    release_db(conn)
     return rows
+
+
+def get_signup_count(event_id: int):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM line_signups WHERE event_id=%s", (event_id,))
+    count = cur.fetchone()[0]
+    cur.close()
+    release_db(conn)
+    return count
 
 
 def add_signup(event_id: int, person_name: str, signup_type: str,
@@ -246,7 +267,7 @@ def add_signup(event_id: int, person_name: str, signup_type: str,
         return False
     finally:
         cur.close()
-        conn.close()
+        release_db(conn)
 
 
 def remove_signup(event_id: int, person_name: str):
@@ -259,7 +280,7 @@ def remove_signup(event_id: int, person_name: str):
     ok = cur.rowcount > 0
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
     return ok
 
 
@@ -276,7 +297,7 @@ def remove_self_signup(event_id: int, user_id: str):
     ok = cur.rowcount > 0
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
     return ok
 
 
@@ -290,7 +311,7 @@ def close_event(group_id: str, number: int):
     cur.execute("UPDATE line_events SET active = FALSE WHERE id = %s", (ev["id"],))
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
     return ev
 
 
@@ -301,8 +322,7 @@ def event_list_text(group_id: str):
 
     lines = ["📌 目前進行中的活動：", ""]
     for i, ev in enumerate(events, 1):
-        count = len(list_signups(ev["id"]))
-        lines.append(f"{i}. {ev['title']}（{count} 人）")
+        lines.append(f"{i}. {ev['title']}（{ev['signup_count']} 人）")
 
     lines += ["", "例如：報名1／代報1 王小明／名單1"]
     return "\n".join(lines)
@@ -604,16 +624,17 @@ function getLiffParams(){
 const lp=getLiffParams();
 const groupId=lp.g, sig=lp.s;
 let profile=null, proxyEventId=null, adminMode=false, closeMode=false;
-function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;setTimeout(()=>e.style.display='none',3000)}
+function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.dataset.old=btn.textContent;btn.textContent=label;btn.disabled=true;btn.style.opacity='.6'}else{btn.textContent=btn.dataset.old||btn.textContent;btn.disabled=false;btn.style.opacity='1'}}
+function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
-async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id})">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">查看名單</button></div>${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">結束此活動</button>`:''}</div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
+async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id},this)">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">查看名單</button></div>${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">結束此活動</button>`:''}</div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
 function openCreate(){document.getElementById('newTitle').value='';createDialog.showModal()}
 async function submitCreate(){const title=document.getElementById('newTitle').value.trim();if(!title){showMsg('請輸入活動名稱',false);return}try{const d=await api('/api/liff/events/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,user_id:profile.userId})});createDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
 function toggleCloseMode(){closeMode=!closeMode;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';loadEvents()}
 async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」嗎？'))return;try{const d=await api('/api/liff/events/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
-async function selfSignup(id){try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
 async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
 async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id);document.getElementById('listTitle').textContent='報名名單｜'+title;document.getElementById('listBody').innerHTML=d.people.length?d.people.map((p,i)=>`${i+1}. ${esc(p)}`).join('<br>'):'目前尚無人報名';listDialog.showModal()}catch(e){showMsg(e.message,false)}}
@@ -672,7 +693,7 @@ def api_liff_close_event():
     cur.execute("UPDATE line_events SET active=FALSE WHERE id=%s AND group_id=%s", (event_id, group_id))
     conn.commit()
     cur.close()
-    conn.close()
+    release_db(conn)
     return jsonify({"message": f"已結束活動：{ev['title']}"})
 
 

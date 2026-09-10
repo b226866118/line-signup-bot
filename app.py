@@ -695,7 +695,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0
 .actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}button{border:0;border-radius:10px;padding:11px 6px;font-size:15px}
 .primary{background:#06c755;color:#fff}.secondary{background:#e8f1ff;color:#1769aa}.light{background:#eee;color:#333}
 .msg{display:none;margin:10px 0;padding:10px;border-radius:10px}.ok{display:block;background:#e8f8ee;color:#17723b}.err{display:block;background:#fdecec;color:#a22}
-dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}.meta{font-size:14px;color:#666;line-height:1.6;margin:8px 0}.desc{font-size:14px;line-height:1.6;margin:8px 0 12px;white-space:pre-wrap}.dm{width:100%;border-radius:12px;margin:8px 0 12px;display:block}label{display:block;font-size:13px;color:#666;margin-top:8px}textarea,input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
+dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}.meta{font-size:14px;color:#666;line-height:1.6;margin:8px 0}.desc{font-size:14px;line-height:1.6;margin:8px 0 12px;white-space:pre-wrap}.dm{width:100%;border-radius:12px;margin:8px 0 12px;display:block}
+.card-dm{max-height:360px;object-fit:contain;background:#f7f7f7;cursor:pointer}
+.preview-desc{color:#555;max-height:3.4em;overflow:hidden}label{display:block;font-size:13px;color:#666;margin-top:8px}textarea,input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
 </style>
 </head>
 <body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div>
@@ -757,36 +759,54 @@ async function loadEvents(){
 try{
   const d=await api('/api/liff/events');
   const root=document.getElementById('events');
+
   if(!d.events.length){
     root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';
-    return
+    return;
   }
+
   root.innerHTML=d.events.map(ev=>{
     const meta=[
       ev.event_date ? `📅 ${esc(ev.event_date)}` : '',
       ev.location ? `📍 ${esc(ev.location)}` : '',
       ev.registration_deadline ? `截止：${esc(ev.registration_deadline)}` : ''
     ].filter(Boolean).join('　');
-    const img=ev.dm_image_url?`<img class="dm" src="${esc(ev.dm_image_url)}" alt="活動DM">`:'';
-    const shortDesc=ev.description?`<div class="desc">${esc(ev.description.length>80?ev.description.slice(0,80)+'…':ev.description)}</div>`:'';
+
     const safeTitle=String(ev.title).replace(/'/g,"\\'");
+
+    // DM 直接顯示在卡片上；點圖片可開啟完整詳情
+    const img=ev.dm_image_url
+      ? `<img class="dm card-dm" src="${esc(ev.dm_image_url)}" alt="活動DM" onclick="showDetail(${ev.id})">`
+      : '';
+
+    // 說明只顯示摘要，完整內容到「查看詳情」
+    const shortDesc=ev.description
+      ? `<div class="desc preview-desc">${esc(ev.description.length>55 ? ev.description.slice(0,55)+'…' : ev.description)}</div>`
+      : '';
+
     return `<div class="card">
       <div class="title">${esc(ev.title)}</div>
-      ${meta?`<div class="meta">${meta}</div>`:''}
+      ${meta ? `<div class="meta">${meta}</div>` : ''}
       ${img}
       ${shortDesc}
       <div class="count">目前 ${ev.count} 人報名</div>
+
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
         <button class="primary" onclick="selfSignup(${ev.id},this)">本人報名</button>
         <button class="secondary" onclick="openProxy(${ev.id},'${safeTitle}')">代人報名</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
-      ${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${safeTitle}')">結束此活動</button>`:''}
-    </div>`
-  }).join('')
+
+      ${adminMode&&closeMode
+        ? `<button class="light" style="width:100%;margin-top:10px;color:#a22"
+             onclick="closeEvent(${ev.id},'${safeTitle}')">結束此活動</button>`
+        : ''}
+    </div>`;
+  }).join('');
+
 }catch(e){
-  document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)
+  document.getElementById('events').innerHTML='載入失敗：'+esc(e.message);
 }}
 
 function openCreate(){

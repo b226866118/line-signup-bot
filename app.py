@@ -17,6 +17,7 @@ CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 LIFF_ID = os.environ["LIFF_ID"]
+ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()}
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_MEMBER_PROFILE_URL = "https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
@@ -107,6 +108,10 @@ def valid_group_signature(group_id: str, sig: str) -> bool:
     if not group_id or not sig:
         return False
     return hmac.compare_digest(sign_group(group_id), sig)
+
+
+def is_admin(user_id: str) -> bool:
+    return bool(user_id and user_id in ADMIN_USER_IDS)
 
 
 def make_liff_url(group_id: str) -> str:
@@ -564,10 +569,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0
 .actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}button{border:0;border-radius:10px;padding:11px 6px;font-size:15px}
 .primary{background:#06c755;color:#fff}.secondary{background:#e8f1ff;color:#1769aa}.light{background:#eee;color:#333}
 .msg{display:none;margin:10px 0;padding:10px;border-radius:10px}.ok{display:block;background:#e8f8ee;color:#17723b}.err{display:block;background:#fdecec;color:#a22}
-dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
+dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}textarea,input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
 </style>
 </head>
-<body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div><div id="events">載入活動中…</div></div>
+<body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div>
+<div id="adminTools" class="card" style="display:none"><div class="title">活動管理</div><div class="actions" style="grid-template-columns:1fr 1fr"><button class="primary" onclick="openCreate()">＋ 新增活動</button><button class="light" onclick="toggleCloseMode()">結束活動</button></div><div id="closeModeHint" style="display:none;color:#a22;margin-top:10px;font-size:14px">請在下方活動卡片按「結束此活動」。</div></div>
+<div id="events">載入活動中…</div></div>
+<dialog id="createDialog"><div class="modal"><h3>新增活動</h3><input id="newTitle" placeholder="活動名稱，例如：9/20 新民班"><button class="primary" style="width:100%" onclick="submitCreate()">建立活動</button><button class="light" style="width:100%;margin-top:8px" onclick="createDialog.close()">取消</button></div></dialog>
 <dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy()">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
@@ -595,12 +603,16 @@ function getLiffParams(){
 
 const lp=getLiffParams();
 const groupId=lp.g, sig=lp.s;
-let profile=null, proxyEventId=null;
+let profile=null, proxyEventId=null, adminMode=false, closeMode=false;
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName;loadEvents()}
-async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id})">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\\'")}')">查看名單</button></div></div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
+async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){console.error(e)} loadEvents()}
+async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id})">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">查看名單</button></div>${adminMode&&closeMode?`<button class="light" style="width:100%;margin-top:10px;color:#a22" onclick="closeEvent(${ev.id},'${String(ev.title).replace(/'/g,"\'")}')">結束此活動</button>`:''}</div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
+function openCreate(){document.getElementById('newTitle').value='';createDialog.showModal()}
+async function submitCreate(){const title=document.getElementById('newTitle').value.trim();if(!title){showMsg('請輸入活動名稱',false);return}try{const d=await api('/api/liff/events/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,user_id:profile.userId})});createDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+function toggleCloseMode(){closeMode=!closeMode;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';loadEvents()}
+async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」嗎？'))return;try{const d=await api('/api/liff/events/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
 async function selfSignup(id){try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
 function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
 async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
@@ -620,6 +632,48 @@ def require_group_from_request():
     if not valid_group_signature(group_id, sig):
         abort(403)
     return group_id
+
+
+
+@app.route("/api/liff/me", methods=["GET"])
+def api_liff_me():
+    require_group_from_request()
+    user_id = request.args.get("user_id", "")
+    return jsonify({"is_admin": is_admin(user_id)})
+
+
+@app.route("/api/liff/events/create", methods=["POST"])
+def api_liff_create_event():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    title = str(data.get("title", "")).strip()
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+    if not title:
+        return jsonify({"error": "請輸入活動名稱"}), 400
+    create_event(group_id, title)
+    return jsonify({"message": f"已新增活動：{title}"})
+
+
+@app.route("/api/liff/events/close", methods=["POST"])
+def api_liff_close_event():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    event_id = int(data.get("event_id", 0) or 0)
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE line_events SET active=FALSE WHERE id=%s AND group_id=%s", (event_id, group_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": f"已結束活動：{ev['title']}"})
 
 
 @app.route("/api/liff/events", methods=["GET"])

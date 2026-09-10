@@ -571,7 +571,31 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy()">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
-const LIFF_ID="__LIFF_ID__"; const qs=new URLSearchParams(location.search); const groupId=qs.get("g"), sig=qs.get("sig"); let profile=null, proxyEventId=null;
+const LIFF_ID="__LIFF_ID__";
+const qs=new URLSearchParams(location.search);
+
+function getLiffParams(){
+  let g=qs.get("g");
+  let s=qs.get("sig");
+
+  if((!g||!s) && qs.get("liff.state")){
+    try{
+      const raw=decodeURIComponent(qs.get("liff.state"));
+      const q=raw.startsWith("?") ? raw.slice(1) : raw;
+      const sp=new URLSearchParams(q);
+      g=g||sp.get("g");
+      s=s||sp.get("sig");
+    }catch(e){
+      console.error("Failed to parse liff.state",e);
+    }
+  }
+
+  return {g:g,s:s};
+}
+
+const lp=getLiffParams();
+const groupId=lp.g, sig=lp.s;
+let profile=null, proxyEventId=null;
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}

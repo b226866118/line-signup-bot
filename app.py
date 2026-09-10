@@ -4,17 +4,19 @@ import hashlib
 import base64
 import re
 from datetime import datetime
+from urllib.parse import urlencode
 
 import requests
 import psycopg2
 import psycopg2.extras
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify, Response
 
 app = Flask(__name__)
 
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 DATABASE_URL = os.environ["DATABASE_URL"]
+LIFF_ID = os.environ["LIFF_ID"]
 
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_MEMBER_PROFILE_URL = "https://api.line.me/v2/bot/group/{group_id}/member/{user_id}"
@@ -76,6 +78,66 @@ def reply(reply_token: str, text: str):
     r.raise_for_status()
 
 
+def reply_flex(reply_token: str, alt_text: str, contents: dict):
+    headers = {
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "replyToken": reply_token,
+        "messages": [{
+            "type": "flex",
+            "altText": alt_text,
+            "contents": contents
+        }]
+    }
+    r = requests.post(LINE_REPLY_URL, headers=headers, json=payload, timeout=10)
+    r.raise_for_status()
+
+
+def sign_group(group_id: str) -> str:
+    return hmac.new(
+        CHANNEL_SECRET.encode("utf-8"),
+        group_id.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def valid_group_signature(group_id: str, sig: str) -> bool:
+    if not group_id or not sig:
+        return False
+    return hmac.compare_digest(sign_group(group_id), sig)
+
+
+def make_liff_url(group_id: str) -> str:
+    q = urlencode({"g": group_id, "sig": sign_group(group_id)})
+    return f"https://liff.line.me/{LIFF_ID}?{q}"
+
+
+def make_entry_flex(group_id: str) -> dict:
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "contents": [
+                {"type": "text", "text": "活動報名入口", "weight": "bold", "size": "xl"},
+                {"type": "text", "text": "查看活動、本人報名、代人報名與報名名單。", "size": "sm", "color": "#666666", "wrap": True}
+            ]
+        },
+        "footer": {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [{
+                "type": "button",
+                "style": "primary",
+                "action": {"type": "uri", "label": "開啟報名頁", "uri": make_liff_url(group_id)}
+            }]
+        }
+    }
+
+
 def get_member_name(group_id: str, user_id: str) -> str:
     if not group_id or not user_id:
         return "未知使用者"
@@ -130,6 +192,19 @@ def get_event_by_number(group_id: str, number: int):
     if 1 <= number <= len(events):
         return events[number - 1]
     return None
+
+
+def get_event_by_id(group_id: str, event_id: int):
+    conn = db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM line_events WHERE id = %s AND group_id = %s AND active = TRUE",
+        (event_id, group_id)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
 
 
 def list_signups(event_id: int):
@@ -296,6 +371,9 @@ HELP_TEXT = """【活動報名 Bot｜Supabase 版】
 查看目前活動：
 活動
 
+LIFF 報名入口：
+報名入口
+
 本人報名：
 報名1
 
@@ -338,6 +416,10 @@ def handle_group_text(event):
 
     if text in ("說明", "help", "Help", "HELP"):
         reply(reply_token, HELP_TEXT)
+        return
+
+    if text in ("報名入口", "活動入口", "LIFF"):
+        reply_flex(reply_token, "活動報名入口", make_entry_flex(group_id))
         return
 
     if text.startswith("開活動 "):
@@ -465,6 +547,120 @@ def handle_group_text(event):
     elif text.startswith("結束"):
         reply(reply_token, "請輸入活動編號，例如：結束1")
         return
+
+
+LIFF_HTML = r"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>活動報名</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f6f7f8;color:#222}
+.wrap{max-width:720px;margin:auto;padding:18px}h1{font-size:24px;margin:4px 0}.sub{color:#777;margin:4px 0 16px}
+.card{background:#fff;border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 1px 6px rgba(0,0,0,.08)}
+.title{font-size:19px;font-weight:700}.count{font-size:14px;color:#666;margin:7px 0 13px}
+.actions{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}button{border:0;border-radius:10px;padding:11px 6px;font-size:15px}
+.primary{background:#06c755;color:#fff}.secondary{background:#e8f1ff;color:#1769aa}.light{background:#eee;color:#333}
+.msg{display:none;margin:10px 0;padding:10px;border-radius:10px}.ok{display:block;background:#e8f8ee;color:#17723b}.err{display:block;background:#fdecec;color:#a22}
+dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{padding:18px}textarea{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px}
+</style>
+</head>
+<body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div><div id="events">載入活動中…</div></div>
+<dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy()">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
+<dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
+<script>
+const LIFF_ID="__LIFF_ID__"; const qs=new URLSearchParams(location.search); const groupId=qs.get("g"), sig=qs.get("sig"); let profile=null, proxyEventId=null;
+function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;setTimeout(()=>e.style.display='none',3000)}
+async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName;loadEvents()}
+async function loadEvents(){try{const d=await api('/api/liff/events');const root=document.getElementById('events'); if(!d.events.length){root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';return} root.innerHTML=d.events.map(ev=>`<div class="card"><div class="title">${esc(ev.title)}</div><div class="count">目前 ${ev.count} 人報名</div><div class="actions"><button class="primary" onclick="selfSignup(${ev.id})">本人報名</button><button class="secondary" onclick="openProxy(${ev.id},'${String(ev.title).replace(/'/g,"\\'")}')">代人報名</button><button class="light" onclick="showList(${ev.id},'${String(ev.title).replace(/'/g,"\\'")}')">查看名單</button></div></div>`).join('')}catch(e){document.getElementById('events').innerHTML='載入失敗：'+esc(e.message)}}
+async function selfSignup(id){try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+function openProxy(id,title){proxyEventId=id;document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';proxyDialog.showModal()}
+async function submitProxy(){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}try{const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName})});proxyDialog.close();showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
+async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id);document.getElementById('listTitle').textContent='報名名單｜'+title;document.getElementById('listBody').innerHTML=d.people.length?d.people.map((p,i)=>`${i+1}. ${esc(p)}`).join('<br>'):'目前尚無人報名';listDialog.showModal()}catch(e){showMsg(e.message,false)}}
+init();
+</script></body></html>"""
+
+
+@app.route("/liff", methods=["GET"])
+def liff_page():
+    return Response(LIFF_HTML.replace("__LIFF_ID__", LIFF_ID), mimetype="text/html")
+
+
+def require_group_from_request():
+    group_id = request.args.get("g", "")
+    sig = request.args.get("sig", "")
+    if not valid_group_signature(group_id, sig):
+        abort(403)
+    return group_id
+
+
+@app.route("/api/liff/events", methods=["GET"])
+def api_liff_events():
+    group_id = require_group_from_request()
+    result = []
+    for ev in list_active_events(group_id):
+        result.append({"id": ev["id"], "title": ev["title"], "count": len(list_signups(ev["id"]))})
+    return jsonify({"events": result})
+
+
+@app.route("/api/liff/signup", methods=["POST"])
+def api_liff_signup():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    event_id = int(data.get("event_id", 0))
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+    user_id = str(data.get("user_id", "")).strip()
+    display_name = str(data.get("display_name", "")).strip()
+    if not user_id or not display_name:
+        return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
+    if not add_signup(event_id, display_name, "self", line_user_id=user_id):
+        return jsonify({"error": f"{display_name} 已經報名過了"}), 409
+    return jsonify({"message": "報名成功"})
+
+
+@app.route("/api/liff/proxy", methods=["POST"])
+def api_liff_proxy():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    event_id = int(data.get("event_id", 0))
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+    names = split_names(str(data.get("names", "")).strip())
+    if not names:
+        return jsonify({"error": "請輸入至少一個姓名"}), 400
+    display_name = str(data.get("display_name", "")).strip()
+    user_id = str(data.get("user_id", "")).strip()
+    added, dup = 0, []
+    for name in names:
+        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name):
+            added += 1
+        else:
+            dup.append(name)
+    msg = f"已成功加入 {added} 人" if not dup else f"已加入 {added} 人；重複：{'、'.join(dup)}"
+    return jsonify({"message": msg})
+
+
+@app.route("/api/liff/list", methods=["GET"])
+def api_liff_list():
+    group_id = require_group_from_request()
+    event_id = int(request.args.get("event_id", "0") or 0)
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+    people = []
+    for row in list_signups(event_id):
+        if row["signup_type"] == "proxy":
+            people.append(f"{row['person_name']}（{row['proxy_by_name']} 代報）")
+        else:
+            people.append(row["person_name"])
+    return jsonify({"people": people})
 
 
 @app.route("/callback", methods=["POST"])

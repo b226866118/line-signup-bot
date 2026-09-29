@@ -1036,9 +1036,13 @@ async function closeRegistration(id,title){
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({event_id:id,user_id:profile.userId,publish:publish})
     });
-    showMsg(d.message,true);
     await loadEvents();
-  }catch(e){showMsg(e.message,false)}
+    showMsg(d.message, !d.publish_failed);
+  }catch(e){
+    showMsg(e.message,false);
+    // 即使公布名單失敗，也重新向後端取得真實報名狀態。
+    try{ await loadEvents(); }catch(_){}
+  }
 }
 async function reopenRegistration(id,title){
   if(!confirm('確定要重新開放「'+title+'」的報名嗎？'))return;
@@ -1454,10 +1458,17 @@ def api_liff_close_registration():
             _publish_event_list(group_id, ev, force=True)
         except Exception as e:
             app.logger.exception("Failed to publish final list for event %s", event_id)
+            # 關閉報名本身已成功；公布失敗不能讓前端誤以為整個關閉失敗。
             return jsonify({
-                "error": "報名已關閉，但名單傳送到 LINE 群組失敗。請稍後按「重新公布最新名單」再試一次。"
-            }), 502
-        return jsonify({"message": f"已關閉「{ev['title']}」並立即公布最新名單到 LINE 群組"})
+                "message": "報名已關閉；但名單傳送到 LINE 群組失敗，請稍後按「重新公布最新名單」再試一次。",
+                "registration_closed": True,
+                "publish_failed": True
+            }), 200
+        return jsonify({
+            "message": f"已關閉「{ev['title']}」並立即公布最新名單到 LINE 群組",
+            "registration_closed": True,
+            "publish_failed": False
+        })
 
     return jsonify({"message": f"已關閉報名：{ev['title']}（尚未公布名單）"})
 

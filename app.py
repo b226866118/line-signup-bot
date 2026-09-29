@@ -998,17 +998,29 @@ async function publishList(id,title){
 }
 async function closeRegistration(id,title){
   const ev=events.find(x=>x.id===id);
-  if(!ev)return;
+  if(!ev){showMsg('找不到活動資料',false);return;}
+
   let publish=false;
   if(ev.reopened_after_close){
-    if(!confirm('確定再次關閉「'+title+'」的報名嗎？\n關閉後會自動公布最新名單到 LINE 群組。'))return;
     publish=true;
   }else{
-    if(!confirm('確定提前關閉「'+title+'」的報名嗎？\n活動與既有名單都會保留。'))return;
-    publish=confirm('要現在把目前名單公布到 LINE 群組嗎？\n\n確定＝公布名單\n取消＝只關閉報名');
+    const choice=window.prompt(
+      '關閉「'+title+'」報名後，要不要立即公布目前名單？\n\n輸入 1：關閉並公布名單\n輸入 2：只關閉報名\n輸入其他內容或按取消：不做任何變更',
+      '2'
+    );
+    if(choice===null)return;
+    if(choice==='1') publish=true;
+    else if(choice==='2') publish=false;
+    else {showMsg('未關閉報名',false);return;}
   }
+
   try{
-    const d=await api('/api/liff/events/close-registration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,publish:publish})});
+    showMsg('正在關閉報名…',true);
+    const d=await api('/api/liff/events/close-registration',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({event_id:id,user_id:profile.userId,publish:publish})
+    });
     showMsg(d.message,true);
     await loadEvents();
   }catch(e){showMsg(e.message,false)}

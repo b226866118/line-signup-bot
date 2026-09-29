@@ -340,28 +340,28 @@ def get_signup_count(event_id: int):
     return count
 
 
-def add_signup(event_id: int, person_name: str, signup_type: str,
-               line_user_id=None, proxy_by_user_id=None, proxy_by_name=None,
-               attendance_option=None):
+def add_signup(event_id, person_name, signup_type, line_user_id=None,
+               proxy_by_user_id=None, proxy_by_name=None,
+               attendance_option=None, dharma_role=None,
+               day1_group=None, day2_group=None):
     conn = db()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            INSERT INTO line_signups(
+        cur.execute("""
+            INSERT INTO line_signups (
                 event_id, person_name, line_user_id, signup_type,
-                proxy_by_user_id, proxy_by_name, created_at, attendance_option
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                event_id, person_name, line_user_id, signup_type,
-                proxy_by_user_id, proxy_by_name, datetime.now(), attendance_option,
-                dharma_role, day1_group, day2_group,
-            ),
-        )
+                proxy_by_user_id, proxy_by_name, created_at,
+                attendance_option, dharma_role, day1_group, day2_group
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            event_id, person_name, line_user_id, signup_type,
+            proxy_by_user_id, proxy_by_name, datetime.now(),
+            attendance_option, dharma_role, day1_group, day2_group,
+        ))
         conn.commit()
         return True
-    except psycopg2.errors.UniqueViolation:
+    except psycopg2.IntegrityError:
         conn.rollback()
         return False
     finally:
@@ -844,7 +844,24 @@ const groupId=lp.g, sig=lp.s;
 let profile=null, proxyEventId=null, proxyEventType="general", adminMode=false, closeMode=false, editMode=false, dharmaEventId=null;
 function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.dataset.old=btn.textContent;btn.textContent=label;btn.disabled=true;btn.style.opacity='.6'}else{btn.textContent=btn.dataset.old||btn.textContent;btn.disabled=false;btn.style.opacity='1'}}
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
-async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
+async function api(path,opt={}){
+  try{
+    const sep=path.includes('?')?'&':'?';
+    const g=encodeURIComponent(String(groupId||''));
+    const s=encodeURIComponent(String(sig||''));
+    const target=String(path)+sep+'g='+g+'&sig='+s;
+    const r=await fetch(target,opt);
+    let d={};
+    try{d=await r.json()}catch(_){throw new Error('伺服器回應格式錯誤')}
+    if(!r.ok)throw new Error(d.error||'發生錯誤');
+    return d;
+  }catch(e){
+    if(e && e.message==='The string did not match the expected pattern.'){
+      throw new Error('Safari 無法建立報名請求網址，請從 LINE 群組的「報名入口」重新開啟頁面');
+    }
+    throw e;
+  }
+}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function init(){
   fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}

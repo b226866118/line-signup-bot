@@ -866,17 +866,20 @@ async function api(path,opt={}){
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function init(){
   fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
+let events=[];
+
 async function loadEvents(){
 try{
   const d=await api('/api/liff/events');
+  events=d.events || [];
   const root=document.getElementById('events');
 
-  if(!d.events.length){
+  if(!events.length){
     root.innerHTML='<div class="card">目前沒有進行中的活動。</div>';
     return;
   }
 
-  root.innerHTML=d.events.map(ev=>{
+  root.innerHTML=events.map(ev=>{
     const meta=[
       ev.event_date ? `📅 ${esc(ev.event_date)}` : '',
       ev.location ? `📍 ${esc(ev.location)}` : '',

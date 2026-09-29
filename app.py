@@ -1801,7 +1801,7 @@ def _push_group_text(group_id, message):
     """Push immediately to the original LINE group. Retry once on transient failure."""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "application/json",
     }
     payload = {

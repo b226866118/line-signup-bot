@@ -785,8 +785,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </select>
 </div>
 <div id="dharmaStaffFields" style="display:none">
-<label>第一天組別（不參加可留白）</label><select id="dharmaDay1" class="dharma-group"></select>
-<label>第二天組別（不參加可留白）</label><select id="dharmaDay2" class="dharma-group"></select>
+<label>第一天組別（不參加可留白）</label><select id="dharmaDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第二天組別（不參加可留白）</label><select id="dharmaDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
 <div style="font-size:12px;color:#888;margin:-4px 0 12px">至少一天要選擇組別。</div>
 </div>
 <button class="primary" style="width:100%" onclick="submitDharma(this)">送出報名</button>
@@ -809,8 +809,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <label>班員參班方式</label><select id="proxyAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option></select>
 </div>
 <div id="proxyStaffFields" style="display:none">
-<label>第一天組別（不參加可留白）</label><select id="proxyDay1" class="dharma-group"></select>
-<label>第二天組別（不參加可留白）</label><select id="proxyDay2" class="dharma-group"></select>
+<label>第一天組別（不參加可留白）</label><select id="proxyDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第二天組別（不參加可留白）</label><select id="proxyDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
 <div style="font-size:12px;color:#888;margin:-4px 0 12px">這一批代報的人會套用相同的日期與組別；至少一天要選擇組別。</div>
 </div>
 </div>
@@ -1098,19 +1098,26 @@ try{
 }catch(e){showMsg(e.message,false)}
 }
 
-const DHARMA_GROUPS=['','服務','文書','接待','總務','辦道','壇務','炊事'];
+const DHARMA_GROUPS=['服務','文書','接待','總務','辦道','壇務','炊事'];
 function fillDharmaGroups(){
   document.querySelectorAll('.dharma-group').forEach(s=>{
-    s.innerHTML=DHARMA_GROUPS.map(x=>`<option value="${x}">${x||'留白'}</option>`).join('');
+    s.innerHTML='<option value="">留白</option>'+DHARMA_GROUPS.map(x=>`<option value="${x}">${x}</option>`).join('');
+    s.value='';
   });
 }
+function selectValue(id){
+  const el=document.getElementById(id);
+  if(!el || el.selectedIndex<0)return '';
+  const opt=el.options[el.selectedIndex];
+  return opt ? String(opt.value||'').trim() : '';
+}
 function toggleDharmaFields(){
-  const staff=document.getElementById('dharmaRole').value==='staff';
+  const staff=selectValue('dharmaRole')==='staff';
   document.getElementById('dharmaStudentFields').style.display=staff?'none':'block';
   document.getElementById('dharmaStaffFields').style.display=staff?'block':'none';
 }
 function toggleProxyDharmaFields(){
-  const staff=document.getElementById('proxyDharmaRole').value==='staff';
+  const staff=selectValue('proxyDharmaRole')==='staff';
   document.getElementById('proxyStudentFields').style.display=staff?'none':'block';
   document.getElementById('proxyStaffFields').style.display=staff?'block':'none';
 }
@@ -1118,19 +1125,19 @@ function openDharma(id,title){
   dharmaEventId=id;
   document.getElementById('dharmaTitle').textContent='法會報名｜'+title;
   document.getElementById('dharmaRole').value='staff';
-  document.getElementById('dharmaDay1').value='';
-  document.getElementById('dharmaDay2').value='';
+  document.getElementById('dharmaDay1').selectedIndex=0;
+  document.getElementById('dharmaDay2').selectedIndex=0;
   toggleDharmaFields();
   dharmaDialog.showModal();
 }
 async function submitDharma(btn){
-  const role=document.getElementById('dharmaRole').value;
+  const role=selectValue('dharmaRole');
   const body={event_id:dharmaEventId,user_id:profile.userId,display_name:profile.displayName,dharma_role:role};
   if(role==='student'){
-    body.attendance_option=document.getElementById('dharmaAttendance').value;
+    body.attendance_option=selectValue('dharmaAttendance');
   }else{
-    body.day1_group=document.getElementById('dharmaDay1').value;
-    body.day2_group=document.getElementById('dharmaDay2').value;
+    body.day1_group=selectValue('dharmaDay1');
+    body.day2_group=selectValue('dharmaDay2');
     if(!body.day1_group&&!body.day2_group){showMsg('辦事人員至少要選擇一天的組別',false);return}
   }
   setBusy(btn,true,'送出中…');
@@ -1147,8 +1154,8 @@ function openProxy(id,title,eventType){
   document.getElementById('proxyDharmaOptions').style.display=proxyEventType==='dharma'?'block':'none';
   if(proxyEventType==='dharma'){
     document.getElementById('proxyDharmaRole').value='student';
-    document.getElementById('proxyDay1').value='';
-    document.getElementById('proxyDay2').value='';
+    document.getElementById('proxyDay1').selectedIndex=0;
+    document.getElementById('proxyDay2').selectedIndex=0;
     toggleProxyDharmaFields();
   }
   proxyDialog.showModal()
@@ -1158,12 +1165,12 @@ async function submitProxy(btn){
   if(!names){showMsg('請輸入姓名',false);return}
   const body={event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName};
   if(proxyEventType==='dharma'){
-    body.dharma_role=document.getElementById('proxyDharmaRole').value;
+    body.dharma_role=selectValue('proxyDharmaRole');
     if(body.dharma_role==='student'){
-      body.attendance_option=document.getElementById('proxyAttendance').value;
+      body.attendance_option=selectValue('proxyAttendance');
     }else{
-      body.day1_group=document.getElementById('proxyDay1').value;
-      body.day2_group=document.getElementById('proxyDay2').value;
+      body.day1_group=selectValue('proxyDay1');
+      body.day2_group=selectValue('proxyDay2');
       if(!body.day1_group&&!body.day2_group){showMsg('辦事人員至少要選擇一天的組別',false);return}
     }
   }

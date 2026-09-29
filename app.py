@@ -921,8 +921,9 @@ try{
            ${ev.list_published_at?`<button class="light" style="width:100%;margin-top:8px" onclick="publishList(${ev.id},'${safeTitle}')">重新公布最新名單</button>`:''}`
         : ''}
       ${adminMode&&ev.registration_open
-        ? `<button class="light" style="width:100%;margin-top:10px;color:#a22"
-             onclick="closeRegistration(${ev.id},'${safeTitle}')">關閉報名</button>`
+        ? `<button type="button" class="light close-registration-btn"
+             data-event-id="${ev.id}"
+             style="width:100%;margin-top:10px;color:#a22">關閉報名</button>`
         : ''}
       ${adminMode&&!ev.registration_open
         ? `<button class="primary" style="width:100%;margin-top:10px"
@@ -938,6 +939,17 @@ try{
         : ''}
     </div>`;
   }).join('');
+
+  document.querySelectorAll('.close-registration-btn').forEach(btn=>{
+    btn.addEventListener('click', async function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      const id=Number(this.dataset.eventId);
+      const ev=events.find(x=>x.id===id);
+      if(!ev){showMsg('找不到活動資料',false);return;}
+      await closeRegistration(id, ev.title || '活動');
+    });
+  });
 
 }catch(e){
   document.getElementById('events').innerHTML='載入失敗：'+esc(e.message);

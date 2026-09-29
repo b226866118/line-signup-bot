@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 import requests
 import psycopg2
+from psycopg2.extras import RealDictCursor
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 from flask import Flask, request, abort, jsonify, Response

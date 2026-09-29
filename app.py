@@ -61,6 +61,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_deadline DATE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'general'")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_force_open BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_manual_closed BOOLEAN NOT NULL DEFAULT FALSE")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -139,7 +140,9 @@ def is_admin(user_id: str) -> bool:
 
 
 def registration_is_open(ev) -> bool:
-    """Deadline is inclusive through 23:59:59 in Taiwan. Admin reopen overrides it."""
+    """Manual close wins. Otherwise admin reopen overrides the deadline."""
+    if ev.get("registration_manual_closed"):
+        return False
     if ev.get("registration_force_open"):
         return True
     deadline = ev.get("registration_deadline")
@@ -852,6 +855,10 @@ try{
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
+      ${adminMode&&ev.registration_open
+        ? `<button class="light" style="width:100%;margin-top:10px;color:#a22"
+             onclick="closeRegistration(${ev.id},'${safeTitle}')">關閉報名</button>`
+        : ''}
       ${adminMode&&!ev.registration_open
         ? `<button class="primary" style="width:100%;margin-top:10px"
              onclick="reopenRegistration(${ev.id},'${safeTitle}')">重新開放報名</button>`
@@ -911,6 +918,14 @@ function toggleEditMode(){
   loadEvents();
 }
 function toggleCloseMode(){closeMode=!closeMode;if(closeMode)editMode=false;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';document.getElementById('editModeHint').style.display='none';loadEvents()}
+async function closeRegistration(id,title){
+  if(!confirm('確定要關閉「'+title+'」的報名嗎？\n活動與既有名單都會保留。'))return;
+  try{
+    const d=await api('/api/liff/events/close-registration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});
+    showMsg(d.message,true);
+    await loadEvents();
+  }catch(e){showMsg(e.message,false)}
+}
 async function reopenRegistration(id,title){
   if(!confirm('確定要重新開放「'+title+'」的報名嗎？'))return;
   try{
@@ -1133,7 +1148,8 @@ def api_liff_update_event():
                 description=%s,
                 dm_image_url=%s,
                 event_type=%s,
-                registration_force_open=FALSE
+                registration_force_open=FALSE,
+                registration_manual_closed=FALSE
             WHERE id=%s AND group_id=%s
             """,
             (
@@ -1161,6 +1177,33 @@ def api_liff_update_event():
     return jsonify({"message": f"已更新活動：{title}"})
 
 
+@app.route("/api/liff/events/close-registration", methods=["POST"])
+def api_liff_close_registration():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    event_id = int(data.get("event_id", 0) or 0)
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE line_events SET registration_manual_closed=TRUE, registration_force_open=FALSE WHERE id=%s AND group_id=%s",
+        (event_id, group_id),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
+
+    return jsonify({"message": f"已關閉報名：{ev['title']}（活動與既有名單保留）"})
+
+
 @app.route("/api/liff/events/reopen", methods=["POST"])
 def api_liff_reopen_event():
     group_id = require_group_from_request()
@@ -1178,7 +1221,7 @@ def api_liff_reopen_event():
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE line_events SET registration_force_open=TRUE WHERE id=%s AND group_id=%s",
+        "UPDATE line_events SET registration_force_open=TRUE, registration_manual_closed=FALSE WHERE id=%s AND group_id=%s",
         (event_id, group_id),
     )
     conn.commit()
@@ -1225,6 +1268,7 @@ def api_liff_events():
             "event_type": ev.get("event_type") or "general",
             "registration_open": registration_is_open(ev),
             "registration_force_open": bool(ev.get("registration_force_open")),
+            "registration_manual_closed": bool(ev.get("registration_manual_closed")),
         })
 
     return jsonify({"events": result})
@@ -1251,6 +1295,7 @@ def api_liff_event_detail():
             "event_type": ev.get("event_type") or "general",
             "registration_open": registration_is_open(ev),
             "registration_force_open": bool(ev.get("registration_force_open")),
+            "registration_manual_closed": bool(ev.get("registration_manual_closed")),
         }
     })
 

@@ -64,6 +64,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_manual_closed BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS auto_publish_list BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS list_published_at TIMESTAMP NULL")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS reopened_after_close BOOLEAN NOT NULL DEFAULT FALSE")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -978,9 +979,18 @@ async function publishList(id,title){
   }catch(e){showMsg(e.message,false)}
 }
 async function closeRegistration(id,title){
-  if(!confirm('確定要關閉「'+title+'」的報名嗎？\n活動與既有名單都會保留。'))return;
+  const ev=events.find(x=>x.id===id);
+  if(!ev)return;
+  let publish=false;
+  if(ev.reopened_after_close){
+    if(!confirm('確定再次關閉「'+title+'」的報名嗎？\n關閉後會自動公布最新名單到 LINE 群組。'))return;
+    publish=true;
+  }else{
+    if(!confirm('確定提前關閉「'+title+'」的報名嗎？\n活動與既有名單都會保留。'))return;
+    publish=confirm('要現在把目前名單公布到 LINE 群組嗎？\n\n確定＝公布名單\n取消＝只關閉報名');
+  }
   try{
-    const d=await api('/api/liff/events/close-registration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});
+    const d=await api('/api/liff/events/close-registration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,publish:publish})});
     showMsg(d.message,true);
     await loadEvents();
   }catch(e){showMsg(e.message,false)}
@@ -1362,17 +1372,37 @@ def api_liff_close_registration():
     if not ev:
         return jsonify({"error": "找不到活動"}), 404
 
+    publish = bool(data.get("publish"))
+    # After a reopened registration, closing again always publishes the newest list.
+    if ev.get("reopened_after_close"):
+        publish = True
+
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE line_events SET registration_manual_closed=TRUE, registration_force_open=FALSE WHERE id=%s AND group_id=%s",
+        """UPDATE line_events
+           SET registration_manual_closed=TRUE,
+               registration_force_open=FALSE,
+               reopened_after_close=FALSE
+           WHERE id=%s AND group_id=%s""",
         (event_id, group_id),
     )
     conn.commit()
     cur.close()
     release_db(conn)
 
-    return jsonify({"message": f"已關閉報名：{ev['title']}（活動與既有名單保留）"})
+    if publish:
+        ev = get_event_by_id(group_id, event_id)
+        try:
+            _publish_event_list(group_id, ev, force=True)
+        except Exception as e:
+            app.logger.exception("Failed to publish final list for event %s", event_id)
+            return jsonify({
+                "error": "報名已關閉，但名單傳送到 LINE 群組失敗。請稍後按「重新公布最新名單」再試一次。"
+            }), 502
+        return jsonify({"message": f"已關閉「{ev['title']}」並立即公布最新名單到 LINE 群組"})
+
+    return jsonify({"message": f"已關閉報名：{ev['title']}（尚未公布名單）"})
 
 
 @app.route("/api/liff/events/reopen", methods=["POST"])
@@ -1392,7 +1422,7 @@ def api_liff_reopen_event():
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE line_events SET registration_force_open=TRUE, registration_manual_closed=FALSE WHERE id=%s AND group_id=%s",
+        "UPDATE line_events SET registration_force_open=TRUE, registration_manual_closed=FALSE, reopened_after_close=TRUE WHERE id=%s AND group_id=%s",
         (event_id, group_id),
     )
     conn.commit()
@@ -1442,6 +1472,7 @@ def api_liff_events():
             "registration_manual_closed": bool(ev.get("registration_manual_closed")),
             "auto_publish_list": bool(ev.get("auto_publish_list")),
             "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
+            "reopened_after_close": bool(ev.get("reopened_after_close")),
         })
 
     return jsonify({"events": result})
@@ -1471,6 +1502,7 @@ def api_liff_event_detail():
             "registration_manual_closed": bool(ev.get("registration_manual_closed")),
             "auto_publish_list": bool(ev.get("auto_publish_list")),
             "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
+            "reopened_after_close": bool(ev.get("reopened_after_close")),
         }
     })
 
@@ -1690,17 +1722,26 @@ def _final_list_text(group_id, ev):
 
 
 def _push_group_text(group_id, message):
+    """Push immediately to the original LINE group. Retry once on transient failure."""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "application/json",
     }
-    r = requests.post(url, headers=headers, json={
+    payload = {
         "to": group_id,
         "messages": [{"type": "text", "text": message[:5000]}],
-    }, timeout=20)
-    if not r.ok:
-        raise RuntimeError(f"LINE push failed: {r.status_code} {r.text}")
+    }
+    last_error = None
+    for _ in range(2):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            if r.ok:
+                return
+            last_error = f"LINE push failed: {r.status_code} {r.text}"
+        except requests.RequestException as e:
+            last_error = f"LINE push request failed: {e}"
+    raise RuntimeError(last_error or "LINE push failed")
 
 
 def _publish_event_list(group_id, ev, force=False):
@@ -1799,8 +1840,12 @@ def api_liff_publish_list():
     if not ev:
         return jsonify({"error": "找不到活動"}), 404
 
-    _publish_event_list(group_id, ev, force=True)
-    return jsonify({"message": "已將最新名單公布到 LINE 群組"})
+    try:
+        _publish_event_list(group_id, ev, force=True)
+    except Exception:
+        app.logger.exception("Failed to manually publish list for event %s", event_id)
+        return jsonify({"error": "名單傳送失敗，請稍後再試一次"}), 502
+    return jsonify({"message": "已立即將最新名單公布到 LINE 群組"})
 
 
 @app.route("/callback", methods=["POST"])

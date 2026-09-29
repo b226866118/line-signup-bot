@@ -5,6 +5,7 @@ import base64
 import re
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
@@ -59,7 +60,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS dm_image_url TEXT")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_deadline DATE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'general'")
-    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS attendance_option TEXT")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_force_open BOOLEAN NOT NULL DEFAULT FALSE")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -74,6 +75,7 @@ def init_db():
         UNIQUE(event_id, person_name)
     );
     """)
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS attendance_option TEXT")
     conn.commit()
     cur.close()
     release_db(conn)
@@ -134,6 +136,17 @@ def valid_group_signature(group_id: str, sig: str) -> bool:
 
 def is_admin(user_id: str) -> bool:
     return bool(user_id and user_id in ADMIN_USER_IDS)
+
+
+def registration_is_open(ev) -> bool:
+    """Deadline is inclusive through 23:59:59 in Taiwan. Admin reopen overrides it."""
+    if ev.get("registration_force_open"):
+        return True
+    deadline = ev.get("registration_deadline")
+    if not deadline:
+        return True
+    today_tw = datetime.now(ZoneInfo("Asia/Taipei")).date()
+    return today_tw <= deadline
 
 
 def make_liff_url(group_id: str) -> str:
@@ -807,8 +820,11 @@ try{
       ev.registration_deadline ? `截止：${esc(ev.registration_deadline)}` : ''
     ].filter(Boolean).join('　');
 
-    const safeTitle=String(ev.title).replace(/'/g,"\\'");
+    const safeTitle=String(ev.title).replace(/'/g,"\'");
     const typeBadge=ev.event_type==='dharma'?'<div class="meta">法會｜請選擇參加方式</div>':'';
+    const deadlineBadge=!ev.registration_open
+      ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#fdecec;color:#a22;font-weight:600">報名已截止</div>'
+      : (ev.registration_force_open ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#e8f8ee;color:#17723b">管理者已重新開放報名</div>' : '');
 
     // DM 直接顯示在卡片上；點圖片可開啟完整詳情
     const img=ev.dm_image_url
@@ -824,17 +840,22 @@ try{
       <div class="title">${esc(ev.title)}</div>
       ${typeBadge}
       ${meta ? `<div class="meta">${meta}</div>` : ''}
+      ${deadlineBadge}
       ${img}
       ${shortDesc}
       <div class="count">目前 ${ev.count} 人報名</div>
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
-        <button class="primary" onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`}">本人報名</button>
-        <button class="secondary" onclick="openProxy(${ev.id},'${safeTitle}','${ev.event_type||'general'}')">代人報名</button>
+        <button class="primary" ${ev.registration_open ? `onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`}"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'本人報名':'報名已截止'}</button>
+        <button class="secondary" ${ev.registration_open ? `onclick="openProxy(${ev.id},'${safeTitle}','${ev.event_type||'general'}')"` : 'disabled style="background:#eee;color:#999"'}>代人報名</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
+      ${adminMode&&!ev.registration_open
+        ? `<button class="primary" style="width:100%;margin-top:10px"
+             onclick="reopenRegistration(${ev.id},'${safeTitle}')">重新開放報名</button>`
+        : ''}
       ${adminMode&&editMode
         ? `<button class="secondary" style="width:100%;margin-top:10px"
              onclick="openEdit(${ev.id})">編輯此活動</button>`
@@ -890,6 +911,14 @@ function toggleEditMode(){
   loadEvents();
 }
 function toggleCloseMode(){closeMode=!closeMode;if(closeMode)editMode=false;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';document.getElementById('editModeHint').style.display='none';loadEvents()}
+async function reopenRegistration(id,title){
+  if(!confirm('確定要重新開放「'+title+'」的報名嗎？'))return;
+  try{
+    const d=await api('/api/liff/events/reopen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});
+    showMsg(d.message,true);
+    await loadEvents();
+  }catch(e){showMsg(e.message,false)}
+}
 async function closeEvent(id,title){if(!confirm('確定要結束「'+title+'」嗎？'))return;try{const d=await api('/api/liff/events/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});showMsg(d.message);loadEvents()}catch(e){showMsg(e.message,false)}}
 async function openEdit(id){
   try{
@@ -973,7 +1002,8 @@ try{
     ev.event_type==='dharma' ? '類型：法會' : '',
     ev.event_date ? '📅 '+ev.event_date : '',
     ev.location ? '📍 '+ev.location : '',
-    ev.registration_deadline ? '報名截止：'+ev.registration_deadline : ''
+    ev.registration_deadline ? '報名截止：'+ev.registration_deadline+'（當日 23:59）' : '',
+    !ev.registration_open ? '⛔ 報名已截止' : (ev.registration_force_open ? '✅ 管理者已重新開放報名' : '')
   ].filter(Boolean).join('<br>');
   document.getElementById('detailMeta').innerHTML=meta||'';
   document.getElementById('detailDesc').textContent=ev.description||'目前沒有活動說明。';
@@ -1102,7 +1132,8 @@ def api_liff_update_event():
                 registration_deadline=%s,
                 description=%s,
                 dm_image_url=%s,
-                event_type=%s
+                event_type=%s,
+                registration_force_open=FALSE
             WHERE id=%s AND group_id=%s
             """,
             (
@@ -1128,6 +1159,32 @@ def api_liff_update_event():
         return jsonify({"error": f"更新活動失敗：{str(e)}"}), 500
 
     return jsonify({"message": f"已更新活動：{title}"})
+
+
+@app.route("/api/liff/events/reopen", methods=["POST"])
+def api_liff_reopen_event():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    event_id = int(data.get("event_id", 0) or 0)
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE line_events SET registration_force_open=TRUE WHERE id=%s AND group_id=%s",
+        (event_id, group_id),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return jsonify({"message": f"已重新開放報名：{ev['title']}"})
 
 
 @app.route("/api/liff/events/close", methods=["POST"])
@@ -1166,6 +1223,8 @@ def api_liff_events():
             "dm_image_url": ev.get("dm_image_url"),
             "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
             "event_type": ev.get("event_type") or "general",
+            "registration_open": registration_is_open(ev),
+            "registration_force_open": bool(ev.get("registration_force_open")),
         })
 
     return jsonify({"events": result})
@@ -1190,6 +1249,8 @@ def api_liff_event_detail():
             "dm_image_url": ev.get("dm_image_url"),
             "registration_deadline": ev.get("registration_deadline").isoformat() if ev.get("registration_deadline") else None,
             "event_type": ev.get("event_type") or "general",
+            "registration_open": registration_is_open(ev),
+            "registration_force_open": bool(ev.get("registration_force_open")),
         }
     })
 
@@ -1207,6 +1268,8 @@ def api_liff_signup():
     attendance_option = str(data.get("attendance_option", "")).strip() or None
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
+    if not registration_is_open(ev):
+        return jsonify({"error": "此活動報名已截止"}), 403
     if (ev.get("event_type") or "general") == "dharma":
         if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
             return jsonify({"error": "請選擇法會參加方式"}), 400
@@ -1228,6 +1291,8 @@ def api_liff_proxy():
     names = split_names(str(data.get("names", "")).strip())
     if not names:
         return jsonify({"error": "請輸入至少一個姓名"}), 400
+    if not registration_is_open(ev):
+        return jsonify({"error": "此活動報名已截止"}), 403
     display_name = str(data.get("display_name", "")).strip()
     user_id = str(data.get("user_id", "")).strip()
     attendance_option = str(data.get("attendance_option", "")).strip() or None

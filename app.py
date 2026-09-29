@@ -62,6 +62,8 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS event_type TEXT NOT NULL DEFAULT 'general'")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_force_open BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS registration_manual_closed BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS auto_publish_list BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS list_published_at TIMESTAMP NULL")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -77,6 +79,9 @@ def init_db():
     );
     """)
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS attendance_option TEXT")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS dharma_role TEXT")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day1_group TEXT")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day2_group TEXT")
     conn.commit()
     cur.close()
     release_db(conn)
@@ -350,6 +355,7 @@ def add_signup(event_id: int, person_name: str, signup_type: str,
             (
                 event_id, person_name, line_user_id, signup_type,
                 proxy_by_user_id, proxy_by_name, datetime.now(), attendance_option,
+                dharma_role, day1_group, day2_group,
             ),
         )
         conn.commit()
@@ -765,7 +771,26 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <button class="primary" style="width:100%" onclick="submitCreate(this)">建立活動</button>
 <button class="light" style="width:100%;margin-top:8px" onclick="createDialog.close()">取消</button>
 </div></dialog>
-<dialog id="dharmaDialog"><div class="modal"><h3 id="dharmaTitle">法會報名</h3><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0"><button class="light" onclick="submitDharma(this,'上兩天')">上兩天</button><button class="light" onclick="submitDharma(this,'第一天')">第一天</button><button class="light" onclick="submitDharma(this,'補第二天')">補第二天</button><button class="light" onclick="submitDharma(this,'加開第一天')">加開第一天</button></div><button class="light" style="width:100%" onclick="dharmaDialog.close()">取消</button></div></dialog>
+<dialog id="dharmaDialog"><div class="modal">
+<h3 id="dharmaTitle">法會報名</h3>
+<label>報名身分</label>
+<select id="dharmaRole" onchange="toggleDharmaFields()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="student">班員</option><option value="staff">辦事人員</option>
+</select>
+<div id="dharmaStudentFields">
+<label>班員參班方式</label>
+<select id="dharmaAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option>
+</select>
+</div>
+<div id="dharmaStaffFields" style="display:none">
+<label>第一天組別（不參加可留白）</label><select id="dharmaDay1" class="dharma-group"></select>
+<label>第二天組別（不參加可留白）</label><select id="dharmaDay2" class="dharma-group"></select>
+<div style="font-size:12px;color:#888;margin:-4px 0 12px">至少一天要選擇組別。</div>
+</div>
+<button class="primary" style="width:100%" onclick="submitDharma(this)">送出報名</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="dharmaDialog.close()">取消</button>
+</div></dialog>
 <dialog id="detailDialog"><div class="modal">
 <h3 id="detailTitle">活動詳情</h3>
 <img id="detailDM" class="dm" style="display:none">
@@ -773,7 +798,22 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <div id="detailDesc" class="desc"></div>
 <button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
 </div></dialog>
-<dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3><div id="proxyDharmaOptions" style="display:none"><label>參加方式</label><select id="proxyAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option></select></div><textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy(this)">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
+<dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3>
+<div id="proxyDharmaOptions" style="display:none">
+<label>報名身分</label>
+<select id="proxyDharmaRole" onchange="toggleProxyDharmaFields()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="student">班員</option><option value="staff">辦事人員</option>
+</select>
+<div id="proxyStudentFields">
+<label>班員參班方式</label><select id="proxyAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option></select>
+</div>
+<div id="proxyStaffFields" style="display:none">
+<label>第一天組別（不參加可留白）</label><select id="proxyDay1" class="dharma-group"></select>
+<label>第二天組別（不參加可留白）</label><select id="proxyDay2" class="dharma-group"></select>
+<div style="font-size:12px;color:#888;margin:-4px 0 12px">這一批代報的人會套用相同的日期與組別；至少一天要選擇組別。</div>
+</div>
+</div>
+<textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy(this)">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
 const LIFF_ID="__LIFF_ID__";
@@ -805,7 +845,8 @@ function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.data
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){const sep=path.includes('?')?'&':'?';const r=await fetch(path+sep+new URLSearchParams({g:groupId,sig:sig}),opt);const d=await r.json();if(!r.ok)throw new Error(d.error||'發生錯誤');return d}
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-async function init(){if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
+async function init(){
+  fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
 async function loadEvents(){
 try{
   const d=await api('/api/liff/events');
@@ -824,7 +865,7 @@ try{
     ].filter(Boolean).join('　');
 
     const safeTitle=String(ev.title).replace(/'/g,"\'");
-    const typeBadge=ev.event_type==='dharma'?'<div class="meta">法會｜請選擇參加方式</div>':'';
+    const typeBadge=ev.event_type==='dharma'?'<div class="meta">法會｜班員／辦事人員分開報名</div>':'';
     const deadlineBadge=!ev.registration_open
       ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#fdecec;color:#a22;font-weight:600">報名已截止</div>'
       : (ev.registration_force_open ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#e8f8ee;color:#17723b">管理者已重新開放報名</div>' : '');
@@ -855,6 +896,11 @@ try{
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
+      ${adminMode
+        ? `<button class="light" style="width:100%;margin-top:10px"
+             onclick="toggleAutoPublish(${ev.id},${ev.auto_publish_list?'false':'true'})">${ev.auto_publish_list?'✓ 截止後自動公布名單':'截止後自動公布名單：關閉'}</button>
+           ${ev.list_published_at?`<button class="light" style="width:100%;margin-top:8px" onclick="publishList(${ev.id},'${safeTitle}')">重新公布最新名單</button>`:''}`
+        : ''}
       ${adminMode&&ev.registration_open
         ? `<button class="light" style="width:100%;margin-top:10px;color:#a22"
              onclick="closeRegistration(${ev.id},'${safeTitle}')">關閉報名</button>`
@@ -918,6 +964,19 @@ function toggleEditMode(){
   loadEvents();
 }
 function toggleCloseMode(){closeMode=!closeMode;if(closeMode)editMode=false;document.getElementById('closeModeHint').style.display=closeMode?'block':'none';document.getElementById('editModeHint').style.display='none';loadEvents()}
+async function toggleAutoPublish(id,enabled){
+  try{
+    const d=await api('/api/liff/events/auto-publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,enabled:enabled})});
+    showMsg(d.message,true);await loadEvents()
+  }catch(e){showMsg(e.message,false)}
+}
+async function publishList(id,title){
+  if(!confirm('確定要把「'+title+'」目前最新名單發到 LINE 群組嗎？'))return;
+  try{
+    const d=await api('/api/liff/events/publish-list',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId})});
+    showMsg(d.message,true);await loadEvents()
+  }catch(e){showMsg(e.message,false)}
+}
 async function closeRegistration(id,title){
   if(!confirm('確定要關閉「'+title+'」的報名嗎？\n活動與既有名單都會保留。'))return;
   try{
@@ -1029,12 +1088,124 @@ try{
 }catch(e){showMsg(e.message,false)}
 }
 
-function openDharma(id,title){dharmaEventId=id;document.getElementById('dharmaTitle').textContent='法會報名｜'+title;dharmaDialog.showModal()}
-async function submitDharma(btn,opt){setBusy(btn,true,'送出中…');try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:dharmaEventId,user_id:profile.userId,display_name:profile.displayName,attendance_option:opt})});dharmaDialog.close();showMsg(d.message);await loadEvents()}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
+const DHARMA_GROUPS=['','服務','文書','接待','總務','辦道','壇務','炊事'];
+function fillDharmaGroups(){
+  document.querySelectorAll('.dharma-group').forEach(s=>{
+    s.innerHTML=DHARMA_GROUPS.map(x=>`<option value="${x}">${x||'留白'}</option>`).join('');
+  });
+}
+function toggleDharmaFields(){
+  const staff=document.getElementById('dharmaRole').value==='staff';
+  document.getElementById('dharmaStudentFields').style.display=staff?'none':'block';
+  document.getElementById('dharmaStaffFields').style.display=staff?'block':'none';
+}
+function toggleProxyDharmaFields(){
+  const staff=document.getElementById('proxyDharmaRole').value==='staff';
+  document.getElementById('proxyStudentFields').style.display=staff?'none':'block';
+  document.getElementById('proxyStaffFields').style.display=staff?'block':'none';
+}
+function openDharma(id,title){
+  dharmaEventId=id;
+  document.getElementById('dharmaTitle').textContent='法會報名｜'+title;
+  document.getElementById('dharmaRole').value='staff';
+  document.getElementById('dharmaDay1').value='';
+  document.getElementById('dharmaDay2').value='';
+  toggleDharmaFields();
+  dharmaDialog.showModal();
+}
+async function submitDharma(btn){
+  const role=document.getElementById('dharmaRole').value;
+  const body={event_id:dharmaEventId,user_id:profile.userId,display_name:profile.displayName,dharma_role:role};
+  if(role==='student'){
+    body.attendance_option=document.getElementById('dharmaAttendance').value;
+  }else{
+    body.day1_group=document.getElementById('dharmaDay1').value;
+    body.day2_group=document.getElementById('dharmaDay2').value;
+    if(!body.day1_group&&!body.day2_group){showMsg('辦事人員至少要選擇一天的組別',false);return}
+  }
+  setBusy(btn,true,'送出中…');
+  try{
+    const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    dharmaDialog.close();showMsg(d.message);await loadEvents()
+  }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
+}
 async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
-function openProxy(id,title,eventType){proxyEventId=id;proxyEventType=eventType||'general';document.getElementById('proxyTitle').textContent='代人報名｜'+title;document.getElementById('proxyNames').value='';document.getElementById('proxyDharmaOptions').style.display=proxyEventType==='dharma'?'block':'none';proxyDialog.showModal()}
-async function submitProxy(btn){const names=document.getElementById('proxyNames').value.trim();if(!names){showMsg('請輸入姓名',false);return}setBusy(btn,true,'送出中…');try{const body={event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName};if(proxyEventType==='dharma')body.attendance_option=document.getElementById('proxyAttendance').value;const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});proxyDialog.close();showMsg(d.message);await loadEvents()}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
-async function showList(id,title){try{const d=await api('/api/liff/list?event_id='+id+'&user_id='+encodeURIComponent(profile.userId));document.getElementById('listTitle').textContent='報名名單｜'+title;if(!d.people.length){document.getElementById('listBody').innerHTML='目前尚無人報名'}else{document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{const b=p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${esc(p.label)}</span>${b}</div>`}).join('')}listDialog.showModal()}catch(e){showMsg(e.message,false)}}
+function openProxy(id,title,eventType){
+  proxyEventId=id;proxyEventType=eventType||'general';
+  document.getElementById('proxyTitle').textContent='代人報名｜'+title;
+  document.getElementById('proxyNames').value='';
+  document.getElementById('proxyDharmaOptions').style.display=proxyEventType==='dharma'?'block':'none';
+  if(proxyEventType==='dharma'){
+    document.getElementById('proxyDharmaRole').value='student';
+    document.getElementById('proxyDay1').value='';
+    document.getElementById('proxyDay2').value='';
+    toggleProxyDharmaFields();
+  }
+  proxyDialog.showModal()
+}
+async function submitProxy(btn){
+  const names=document.getElementById('proxyNames').value.trim();
+  if(!names){showMsg('請輸入姓名',false);return}
+  const body={event_id:proxyEventId,names:names,user_id:profile.userId,display_name:profile.displayName};
+  if(proxyEventType==='dharma'){
+    body.dharma_role=document.getElementById('proxyDharmaRole').value;
+    if(body.dharma_role==='student'){
+      body.attendance_option=document.getElementById('proxyAttendance').value;
+    }else{
+      body.day1_group=document.getElementById('proxyDay1').value;
+      body.day2_group=document.getElementById('proxyDay2').value;
+      if(!body.day1_group&&!body.day2_group){showMsg('辦事人員至少要選擇一天的組別',false);return}
+    }
+  }
+  setBusy(btn,true,'送出中…');
+  try{
+    const d=await api('/api/liff/proxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    proxyDialog.close();showMsg(d.message);await loadEvents()
+  }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
+}
+function cancelBtn(id,p,title){
+  return p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';
+}
+function dharmaListHtml(id,title,people){
+  let html='';
+  const students=people.filter(p=>p.dharma_role==='student'||(!p.dharma_role&&p.attendance_option));
+  if(students.length){
+    html+='<h4 style="margin:8px 0">班員</h4>';
+    ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
+      const a=students.filter(p=>p.attendance_option===opt);
+      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`${esc(p.name)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+    });
+  }
+  const staff=people.filter(p=>p.dharma_role==='staff');
+  ['day1_group','day2_group'].forEach((key,idx)=>{
+    const day=idx===0?'第一天':'第二天';
+    const active=staff.filter(p=>p[key]);
+    if(!active.length)return;
+    html+=`<h4 style="margin:16px 0 6px">${day}辦事人員（${active.length}）</h4>`;
+    DHARMA_GROUPS.filter(Boolean).forEach(g=>{
+      const a=active.filter(p=>p[key]===g);
+      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`${esc(p.name)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+    });
+  });
+  return html||'目前尚無人報名';
+}
+async function showList(id,title){
+  try{
+    const d=await api('/api/liff/list?event_id='+id+'&user_id='+encodeURIComponent(profile.userId));
+    document.getElementById('listTitle').textContent='報名名單｜'+title;
+    if(!d.people.length){
+      document.getElementById('listBody').innerHTML='目前尚無人報名';
+    }else if(d.event_type==='dharma'){
+      document.getElementById('listBody').innerHTML=dharmaListHtml(id,title,d.people);
+    }else{
+      document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
+        const b=cancelBtn(id,p,title);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${esc(p.label)}</span>${b}</div>`
+      }).join('');
+    }
+    listDialog.showModal()
+  }catch(e){showMsg(e.message,false)}
+}
 async function cancelSignup(eventId,signupId,name,title){if(!confirm('確定要取消「'+name+'」的報名嗎？'))return;try{const d=await api('/api/liff/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:eventId,signup_id:signupId,user_id:profile.userId})});showMsg(d.message);await showList(eventId,title);await loadEvents()}catch(e){showMsg(e.message,false)}}
 init();
 </script></body></html>"""
@@ -1269,6 +1440,8 @@ def api_liff_events():
             "registration_open": registration_is_open(ev),
             "registration_force_open": bool(ev.get("registration_force_open")),
             "registration_manual_closed": bool(ev.get("registration_manual_closed")),
+            "auto_publish_list": bool(ev.get("auto_publish_list")),
+            "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
         })
 
     return jsonify({"events": result})
@@ -1296,6 +1469,8 @@ def api_liff_event_detail():
             "registration_open": registration_is_open(ev),
             "registration_force_open": bool(ev.get("registration_force_open")),
             "registration_manual_closed": bool(ev.get("registration_manual_closed")),
+            "auto_publish_list": bool(ev.get("auto_publish_list")),
+            "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
         }
     })
 
@@ -1311,16 +1486,34 @@ def api_liff_signup():
     user_id = str(data.get("user_id", "")).strip()
     display_name = str(data.get("display_name", "")).strip()
     attendance_option = str(data.get("attendance_option", "")).strip() or None
+    dharma_role = str(data.get("dharma_role", "")).strip() or None
+    day1_group = str(data.get("day1_group", "")).strip() or None
+    day2_group = str(data.get("day2_group", "")).strip() or None
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
     if not registration_is_open(ev):
         return jsonify({"error": "此活動報名已截止"}), 403
     if (ev.get("event_type") or "general") == "dharma":
-        if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
-            return jsonify({"error": "請選擇法會參加方式"}), 400
+        valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
+        if dharma_role == "student":
+            if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
+                return jsonify({"error": "請選擇班員參班方式"}), 400
+            day1_group = day2_group = None
+        elif dharma_role == "staff":
+            attendance_option = None
+            if day1_group and day1_group not in valid_groups:
+                return jsonify({"error": "第一天組別不正確"}), 400
+            if day2_group and day2_group not in valid_groups:
+                return jsonify({"error": "第二天組別不正確"}), 400
+            if not day1_group and not day2_group:
+                return jsonify({"error": "辦事人員至少要選擇一天的組別"}), 400
+        else:
+            return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
-        attendance_option = None
-    if not add_signup(event_id, display_name, "self", line_user_id=user_id, attendance_option=attendance_option):
+        attendance_option = dharma_role = day1_group = day2_group = None
+    if not add_signup(event_id, display_name, "self", line_user_id=user_id,
+                      attendance_option=attendance_option, dharma_role=dharma_role,
+                      day1_group=day1_group, day2_group=day2_group):
         return jsonify({"error": f"{display_name} 已經報名過了"}), 409
     return jsonify({"message": "報名成功"})
 
@@ -1341,14 +1534,32 @@ def api_liff_proxy():
     display_name = str(data.get("display_name", "")).strip()
     user_id = str(data.get("user_id", "")).strip()
     attendance_option = str(data.get("attendance_option", "")).strip() or None
+    dharma_role = str(data.get("dharma_role", "")).strip() or None
+    day1_group = str(data.get("day1_group", "")).strip() or None
+    day2_group = str(data.get("day2_group", "")).strip() or None
     if (ev.get("event_type") or "general") == "dharma":
-        if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
-            return jsonify({"error": "請選擇法會參加方式"}), 400
+        valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
+        if dharma_role == "student":
+            if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
+                return jsonify({"error": "請選擇班員參班方式"}), 400
+            day1_group = day2_group = None
+        elif dharma_role == "staff":
+            attendance_option = None
+            if day1_group and day1_group not in valid_groups:
+                return jsonify({"error": "第一天組別不正確"}), 400
+            if day2_group and day2_group not in valid_groups:
+                return jsonify({"error": "第二天組別不正確"}), 400
+            if not day1_group and not day2_group:
+                return jsonify({"error": "辦事人員至少要選擇一天的組別"}), 400
+        else:
+            return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
-        attendance_option = None
+        attendance_option = dharma_role = day1_group = day2_group = None
     added, dup = 0, []
     for name in names:
-        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name, attendance_option=attendance_option):
+        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name,
+                      attendance_option=attendance_option, dharma_role=dharma_role,
+                      day1_group=day1_group, day2_group=day2_group):
             added += 1
         else:
             dup.append(name)
@@ -1386,9 +1597,14 @@ def api_liff_list():
             "name": row["person_name"],
             "label": label,
             "can_cancel": can_cancel,
+            "dharma_role": row.get("dharma_role"),
+            "attendance_option": row.get("attendance_option"),
+            "day1_group": row.get("day1_group"),
+            "day2_group": row.get("day2_group"),
+            "proxy_by_name": row.get("proxy_by_name"),
         })
 
-    return jsonify({"people": people})
+    return jsonify({"people": people, "event_type": ev.get("event_type") or "general"})
 
 
 @app.route("/api/liff/cancel", methods=["POST"])
@@ -1418,6 +1634,173 @@ def api_liff_cancel():
         "message": f"已取消：{row['person_name']}",
         "count": get_signup_count(event_id),
     })
+
+
+
+def _final_list_text(group_id, ev):
+    """Build the final list text sent to the LINE group."""
+    conn = db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group
+        FROM line_signups
+        WHERE event_id=%s
+        ORDER BY id
+    """, (ev["id"],))
+    rows = cur.fetchall()
+    cur.close()
+    release_db(conn)
+
+    title = ev.get("title") or "活動"
+    lines = [f"📋 {title}｜最終報名名單", ""]
+
+    if (ev.get("event_type") or "general") != "dharma":
+        lines.append(f"報名人數：{len(rows)} 人")
+        for i, r in enumerate(rows, 1):
+            lines.append(f"{i}. {r['person_name']}")
+    else:
+        students = [r for r in rows if r.get("dharma_role") == "student" or (not r.get("dharma_role") and r.get("attendance_option"))]
+        staff = [r for r in rows if r.get("dharma_role") == "staff"]
+
+        if students:
+            lines.append("【班員】")
+            for opt in ["上兩天", "第一天", "補第二天", "加開第一天"]:
+                names = [r["person_name"] for r in students if r.get("attendance_option") == opt]
+                if names:
+                    lines.append(f"{opt}（{len(names)}）：{'、'.join(names)}")
+            lines.append("")
+
+        groups = ["服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"]
+        for key, day in [("day1_group", "第一天"), ("day2_group", "第二天")]:
+            active = [r for r in staff if r.get(key)]
+            if not active:
+                continue
+            lines.append(f"【{day}辦事人員】")
+            for g in groups:
+                names = [r["person_name"] for r in active if r.get(key) == g]
+                if names:
+                    lines.append(f"{g}（{len(names)}）：{'、'.join(names)}")
+            lines.append("")
+
+        unique_names = {r["person_name"] for r in rows}
+        lines.append(f"總報名人數：{len(unique_names)} 人")
+
+    lines += ["", "報名已截止，如需異動請聯絡活動管理者。"]
+    return "\n".join(lines)
+
+
+def _push_group_text(group_id, message):
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(url, headers=headers, json={
+        "to": group_id,
+        "messages": [{"type": "text", "text": message[:5000]}],
+    }, timeout=20)
+    if not r.ok:
+        raise RuntimeError(f"LINE push failed: {r.status_code} {r.text}")
+
+
+def _publish_event_list(group_id, ev, force=False):
+    if not force and ev.get("list_published_at"):
+        return False
+    _push_group_text(group_id, _final_list_text(group_id, ev))
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE line_events SET list_published_at=NOW() WHERE id=%s", (ev["id"],))
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return True
+
+
+@app.route("/api/cron/publish-deadline-lists", methods=["GET", "POST"])
+def cron_publish_deadline_lists():
+    """
+    Called by an external scheduler. Publishes each eligible event only once.
+    Protect with CRON_SECRET in Render; scheduler sends ?secret=...
+    """
+    expected = os.environ.get("CRON_SECRET", "")
+    supplied = request.args.get("secret", "")
+    if not expected or supplied != expected:
+        return jsonify({"error": "unauthorized"}), 401
+
+    now_tw = datetime.now(ZoneInfo("Asia/Taipei"))
+    conn = db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("""
+        SELECT *
+        FROM line_events
+        WHERE active=TRUE
+          AND auto_publish_list=TRUE
+          AND list_published_at IS NULL
+          AND registration_deadline IS NOT NULL
+          AND registration_force_open=FALSE
+          AND registration_manual_closed=FALSE
+        ORDER BY id
+    """)
+    events = cur.fetchall()
+    cur.close()
+    release_db(conn)
+
+    published = []
+    for ev in events:
+        d = ev.get("registration_deadline")
+        if isinstance(d, str):
+            d = date.fromisoformat(d[:10])
+        # Deadline is inclusive through 23:59 Taiwan; publish from next day 00:00.
+        if d and now_tw.date() > d:
+            _publish_event_list(ev["group_id"], ev, force=False)
+            published.append(ev["id"])
+
+    return jsonify({"ok": True, "published_event_ids": published})
+
+
+@app.route("/api/liff/events/auto-publish", methods=["POST"])
+def api_liff_auto_publish():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    event_id = int(data.get("event_id", 0) or 0)
+    enabled = bool(data.get("enabled"))
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE line_events SET auto_publish_list=%s WHERE id=%s AND group_id=%s",
+        (enabled, event_id, group_id),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return jsonify({"message": "已開啟截止後自動公布名單" if enabled else "已關閉截止後自動公布名單"})
+
+
+@app.route("/api/liff/events/publish-list", methods=["POST"])
+def api_liff_publish_list():
+    """Admin manual/re-publish. Intended after reopen/changes."""
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    event_id = int(data.get("event_id", 0) or 0)
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理活動的權限"}), 403
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+
+    _publish_event_list(group_id, ev, force=True)
+    return jsonify({"message": "已將最新名單公布到 LINE 群組"})
 
 
 @app.route("/callback", methods=["POST"])

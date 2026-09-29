@@ -1200,6 +1200,11 @@ async function submitProxy(btn){
 function cancelBtn(id,p,title){
   return p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';
 }
+function personText(p){
+  const proxy=p.proxy_by_name ? `（${esc(p.proxy_by_name)} 代報）` : '';
+  return `${esc(p.name)}${proxy}`;
+}
+function dharmaPersonText(p){ return personText(p); }
 function dharmaListHtml(id,title,people){
   let html='';
   const students=people.filter(p=>p.dharma_role==='student'||(!p.dharma_role&&p.attendance_option));
@@ -1207,7 +1212,7 @@ function dharmaListHtml(id,title,people){
     html+='<h4 style="margin:8px 0">班員</h4>';
     ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
       const a=students.filter(p=>p.attendance_option===opt);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`${esc(p.name)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`${dharmaPersonText(p)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
     });
   }
   const staff=people.filter(p=>p.dharma_role==='staff');
@@ -1218,7 +1223,7 @@ function dharmaListHtml(id,title,people){
     html+=`<h4 style="margin:16px 0 6px">${day}辦事人員（${active.length}）</h4>`;
     DHARMA_GROUPS.filter(Boolean).forEach(g=>{
       const a=active.filter(p=>p[key]===g);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`${esc(p.name)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`${dharmaPersonText(p)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
     });
   });
   return html||'目前尚無人報名';
@@ -1234,7 +1239,7 @@ async function showList(id,title){
     }else{
       document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
         const b=cancelBtn(id,p,title);
-        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${esc(p.label)}</span>${b}</div>`
+        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${personText(p)}</span>${b}</div>`
       }).join('');
     }
     listDialog.showModal()
@@ -1693,12 +1698,18 @@ def api_liff_cancel():
 
 
 
+def _signup_display_name(row):
+    name = row.get("person_name") or ""
+    proxy = row.get("proxy_by_name")
+    return f"{name}（{proxy} 代報）" if proxy else name
+
+
 def _final_list_text(group_id, ev):
     """Build the final list text sent to the LINE group."""
     conn = db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group
+        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group, proxy_by_name
         FROM line_signups
         WHERE event_id=%s
         ORDER BY id
@@ -1713,7 +1724,7 @@ def _final_list_text(group_id, ev):
     if (ev.get("event_type") or "general") != "dharma":
         lines.append(f"報名人數：{len(rows)} 人")
         for i, r in enumerate(rows, 1):
-            lines.append(f"{i}. {r['person_name']}")
+            lines.append(f"{i}. {_signup_display_name(r)}")
     else:
         students = [r for r in rows if r.get("dharma_role") == "student" or (not r.get("dharma_role") and r.get("attendance_option"))]
         staff = [r for r in rows if r.get("dharma_role") == "staff"]
@@ -1721,7 +1732,7 @@ def _final_list_text(group_id, ev):
         if students:
             lines.append("【班員】")
             for opt in ["上兩天", "第一天", "補第二天", "加開第一天"]:
-                names = [r["person_name"] for r in students if r.get("attendance_option") == opt]
+                names = [_signup_display_name(r) for r in students if r.get("attendance_option") == opt]
                 if names:
                     lines.append(f"{opt}（{len(names)}）：{'、'.join(names)}")
             lines.append("")
@@ -1733,7 +1744,7 @@ def _final_list_text(group_id, ev):
                 continue
             lines.append(f"【{day}辦事人員】")
             for g in groups:
-                names = [r["person_name"] for r in active if r.get(key) == g]
+                names = [_signup_display_name(r) for r in active if r.get(key) == g]
                 if names:
                     lines.append(f"{g}（{len(names)}）：{'、'.join(names)}")
             lines.append("")

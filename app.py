@@ -1212,7 +1212,7 @@ function dharmaListHtml(id,title,people){
     html+='<h4 style="margin:8px 0">班員</h4>';
     ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
       const a=students.filter(p=>p.attendance_option===opt);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`${dharmaPersonText(p)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
     });
   }
   const staff=people.filter(p=>p.dharma_role==='staff');
@@ -1223,7 +1223,7 @@ function dharmaListHtml(id,title,people){
     html+=`<h4 style="margin:16px 0 6px">${day}辦事人員（${active.length}）</h4>`;
     DHARMA_GROUPS.filter(Boolean).forEach(g=>{
       const a=active.filter(p=>p[key]===g);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`${dharmaPersonText(p)}${cancelBtn(id,p,title)}`).join('、')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
     });
   });
   return html||'目前尚無人報名';
@@ -1734,7 +1734,8 @@ def _final_list_text(group_id, ev):
             for opt in ["上兩天", "第一天", "補第二天", "加開第一天"]:
                 names = [_signup_display_name(r) for r in students if r.get("attendance_option") == opt]
                 if names:
-                    lines.append(f"{opt}（{len(names)}）：{'、'.join(names)}")
+                    lines.append(f"{opt}（{len(names)}）")
+                    lines.extend(names)
             lines.append("")
 
         groups = ["服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"]
@@ -1746,7 +1747,8 @@ def _final_list_text(group_id, ev):
             for g in groups:
                 names = [_signup_display_name(r) for r in active if r.get(key) == g]
                 if names:
-                    lines.append(f"{g}（{len(names)}）：{'、'.join(names)}")
+                    lines.append(f"{g}（{len(names)}）")
+                    lines.extend(names)
             lines.append("")
 
         unique_names = {r["person_name"] for r in rows}

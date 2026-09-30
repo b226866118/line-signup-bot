@@ -66,6 +66,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS auto_publish_list BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS list_published_at TIMESTAMP NULL")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS reopened_after_close BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS deadline_list_published_at TIMESTAMP NULL")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -1434,8 +1435,14 @@ def api_liff_close_registration():
         return jsonify({"error": "找不到活動"}), 404
 
     publish = bool(data.get("publish"))
-    # After a reopened registration, closing again always publishes the newest list.
-    if ev.get("reopened_after_close"):
+    # 截止日前：是否公布由管理員決定。
+    # 截止後若曾重新開放：再次關閉時直接公布最新完整名單。
+    deadline = ev.get("registration_deadline")
+    if isinstance(deadline, str):
+        deadline = date.fromisoformat(deadline[:10])
+    now_tw = datetime.now(ZoneInfo("Asia/Taipei"))
+    is_after_deadline = bool(deadline and now_tw.date() > deadline)
+    if is_after_deadline and ev.get("reopened_after_close"):
         publish = True
 
     conn = db()
@@ -1490,7 +1497,12 @@ def api_liff_reopen_event():
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE line_events SET registration_force_open=TRUE, registration_manual_closed=FALSE, reopened_after_close=TRUE WHERE id=%s AND group_id=%s",
+        """UPDATE line_events
+           SET registration_force_open=TRUE,
+               registration_manual_closed=FALSE,
+               reopened_after_close=TRUE,
+               list_published_at=NULL
+           WHERE id=%s AND group_id=%s""",
         (event_id, group_id),
     )
     conn.commit()
@@ -1852,10 +1864,8 @@ def cron_publish_deadline_lists():
         FROM line_events
         WHERE active=TRUE
           AND auto_publish_list=TRUE
-          AND list_published_at IS NULL
+          AND deadline_list_published_at IS NULL
           AND registration_deadline IS NOT NULL
-          AND registration_force_open=FALSE
-          AND registration_manual_closed=FALSE
         ORDER BY id
     """)
     events = cur.fetchall()
@@ -1869,7 +1879,17 @@ def cron_publish_deadline_lists():
             d = date.fromisoformat(d[:10])
         # Deadline is inclusive through 23:59 Taiwan; publish from next day 00:00.
         if d and now_tw.date() > d:
-            _publish_event_list(ev["group_id"], ev, force=False)
+            # 正式截止公布與截止前的手動公布分開記錄。
+            _publish_event_list(ev["group_id"], ev, force=True)
+            conn2 = db()
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE line_events SET deadline_list_published_at=NOW() WHERE id=%s",
+                (ev["id"],),
+            )
+            conn2.commit()
+            cur2.close()
+            release_db(conn2)
             published.append(ev["id"])
 
     return jsonify({"ok": True, "published_event_ids": published})

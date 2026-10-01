@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import base64
+import json
 import re
 import uuid
 from datetime import datetime
@@ -67,6 +68,8 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS list_published_at TIMESTAMP NULL")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS reopened_after_close BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS deadline_list_published_at TIMESTAMP NULL")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_label TEXT")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -85,6 +88,7 @@ def init_db():
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS dharma_role TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day1_group TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day2_group TEXT")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS relay_items TEXT")
     conn.commit()
     cur.close()
     release_db(conn)
@@ -212,6 +216,8 @@ def create_event(
     dm_image_url=None,
     registration_deadline=None,
     event_type="general",
+    relay_enabled=False,
+    relay_label=None,
 ):
     conn = db()
     cur = conn.cursor()
@@ -219,9 +225,10 @@ def create_event(
         """
         INSERT INTO line_events(
             group_id, title, active, created_at,
-            event_date, location, description, dm_image_url, registration_deadline, event_type
+            event_date, location, description, dm_image_url, registration_deadline, event_type,
+            relay_enabled, relay_label
         )
-        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -234,6 +241,8 @@ def create_event(
             dm_image_url or None,
             registration_deadline or None,
             event_type or "general",
+            bool(relay_enabled) if (event_type or "general") == "general" else False,
+            (relay_label or "接龍項目").strip() if bool(relay_enabled) and (event_type or "general") == "general" else None,
         ),
     )
     event_id = cur.fetchone()[0]
@@ -345,7 +354,7 @@ def get_signup_count(event_id: int):
 def add_signup(event_id, person_name, signup_type, line_user_id=None,
                proxy_by_user_id=None, proxy_by_name=None,
                attendance_option=None, dharma_role=None,
-               day1_group=None, day2_group=None):
+               day1_group=None, day2_group=None, relay_items=None):
     conn = db()
     cur = conn.cursor()
     try:
@@ -353,13 +362,14 @@ def add_signup(event_id, person_name, signup_type, line_user_id=None,
             INSERT INTO line_signups (
                 event_id, person_name, line_user_id, signup_type,
                 proxy_by_user_id, proxy_by_name, created_at,
-                attendance_option, dharma_role, day1_group, day2_group
+                attendance_option, dharma_role, day1_group, day2_group, relay_items
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             event_id, person_name, line_user_id, signup_type,
             proxy_by_user_id, proxy_by_name, datetime.now(),
             attendance_option, dharma_role, day1_group, day2_group,
+            json.dumps(relay_items or [], ensure_ascii=False),
         ))
         conn.commit()
         return True
@@ -369,6 +379,32 @@ def add_signup(event_id, person_name, signup_type, line_user_id=None,
     finally:
         cur.close()
         release_db(conn)
+
+
+
+def parse_relay_items(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    try:
+        data = json.loads(value)
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return [x.strip() for x in re.split(r"[、,，\n]+", str(value)) if x.strip()]
+
+
+def clean_relay_items(value):
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        s = str(item).strip()
+        if s and s not in result:
+            result.append(s)
+    return result[:20]
 
 
 def remove_signup(event_id: int, person_name: str):
@@ -747,7 +783,11 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <input type="hidden" id="editEventId">
 <label>活動名稱 *</label><input id="editTitle">
 <label>活動類型</label>
-<select id="editType" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
+<select id="editType" onchange="toggleEditRelay()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
+<div id="editRelayBox" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
+<label style="margin:0"><input id="editRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleEditRelayLabel()">開啟接龍項目</label>
+<div id="editRelayLabelBox" style="display:none"><label>接龍欄位名稱</label><input id="editRelayLabel" placeholder="例如：菜色、攜帶物品、工作項目"></div>
+</div>
 <label>活動日期</label><input id="editDate" type="date">
 <label>地點</label><input id="editLocation">
 <label>報名截止日</label><input id="editDeadline" type="date">
@@ -764,7 +804,11 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <h3>新增活動</h3>
 <label>活動名稱 *</label><input id="newTitle" placeholder="例如：9/20 新民班">
 <label>活動類型</label>
-<select id="newType" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
+<select id="newType" onchange="toggleNewRelay()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
+<div id="newRelayBox" style="padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
+<label style="margin:0"><input id="newRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleNewRelayLabel()">開啟接龍項目</label>
+<div id="newRelayLabelBox" style="display:none"><label>接龍欄位名稱</label><input id="newRelayLabel" value="菜色" placeholder="例如：菜色、攜帶物品、工作項目"></div>
+</div>
 <label>活動日期</label><input id="newDate" type="date">
 <label>地點</label><input id="newLocation" placeholder="例如：崇德大樓">
 <label>報名截止日</label><input id="newDeadline" type="date">
@@ -801,6 +845,22 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <div id="detailDesc" class="desc"></div>
 <button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
 </div></dialog>
+<dialog id="relaySelfDialog"><div class="modal">
+<h3 id="relaySelfTitle">本人報名</h3>
+<div id="relaySelfLabel" style="font-weight:600;margin:8px 0"></div>
+<div id="relaySelfItems"></div>
+<button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addRelayInput('relaySelfItems')">＋ 新增一項</button>
+<button class="primary" style="width:100%" onclick="submitRelaySelf(this)">送出報名</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="relaySelfDialog.close()">取消</button>
+</div></dialog>
+<dialog id="relayEditDialog"><div class="modal">
+<h3 id="relayEditTitle">修改接龍項目</h3>
+<div id="relayEditLabel" style="font-weight:600;margin:8px 0"></div>
+<div id="relayEditItems"></div>
+<button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addRelayInput('relayEditItems')">＋ 新增一項</button>
+<button class="primary" style="width:100%" onclick="submitRelayEdit(this)">儲存修改</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="relayEditDialog.close()">取消</button>
+</div></dialog>
 <dialog id="proxyDialog"><div class="modal"><h3 id="proxyTitle">代人報名</h3>
 <div id="proxyDharmaOptions" style="display:none">
 <label>報名身分</label>
@@ -815,6 +875,12 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <label>第二天組別（不參加可留白）</label><select id="proxyDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
 <div style="font-size:12px;color:#888;margin:-4px 0 12px">這一批代報的人會套用相同的日期與組別；至少一天要選擇組別。</div>
 </div>
+</div>
+<div id="proxyRelayOptions" style="display:none">
+<div id="proxyRelayLabel" style="font-weight:600;margin:8px 0"></div>
+<div id="proxyRelayItems"></div>
+<button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addRelayInput('proxyRelayItems')">＋ 新增一項</button>
+<div style="font-size:12px;color:#888;margin:-2px 0 12px">一次代報多人時，這批人會套用相同的接龍項目；若不同請分開代報。</div>
 </div>
 <textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy(this)">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
@@ -868,6 +934,42 @@ function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;',
 async function init(){
   fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
 let events=[];
+let lastListPeople=[];
+let relaySelfEventId=0, relayEditEventId=0, relayEditSignupId=0;
+
+function addRelayInput(containerId,value=''){
+  const root=document.getElementById(containerId);
+  const row=document.createElement('div');
+  row.style.cssText='display:flex;gap:7px;align-items:center;margin-bottom:7px';
+  const input=document.createElement('input');
+  input.className='relay-item-input'; input.value=value||''; input.placeholder='請輸入項目';
+  input.style.cssText='margin:0;flex:1';
+  const del=document.createElement('button');
+  del.type='button'; del.className='light'; del.textContent='刪除';
+  del.style.cssText='padding:10px 12px'; del.onclick=()=>row.remove();
+  row.appendChild(input); row.appendChild(del); root.appendChild(row);
+}
+function relayValues(containerId){
+  return Array.from(document.querySelectorAll('#'+containerId+' .relay-item-input')).map(x=>x.value.trim()).filter(Boolean);
+}
+function toggleNewRelay(){
+  const general=document.getElementById('newType').value==='general';
+  document.getElementById('newRelayBox').style.display=general?'block':'none';
+  toggleNewRelayLabel();
+}
+function toggleNewRelayLabel(){
+  const on=document.getElementById('newType').value==='general'&&document.getElementById('newRelayEnabled').checked;
+  document.getElementById('newRelayLabelBox').style.display=on?'block':'none';
+}
+function toggleEditRelay(){
+  const general=document.getElementById('editType').value==='general';
+  document.getElementById('editRelayBox').style.display=general?'block':'none';
+  toggleEditRelayLabel();
+}
+function toggleEditRelayLabel(){
+  const on=document.getElementById('editType').value==='general'&&document.getElementById('editRelayEnabled').checked;
+  document.getElementById('editRelayLabelBox').style.display=on?'block':'none';
+}
 
 async function loadEvents(){
 try{
@@ -888,7 +990,9 @@ try{
     ].filter(Boolean).join('　');
 
     const safeTitle=String(ev.title).replace(/'/g,"\'");
-    const typeBadge=ev.event_type==='dharma'?'<div class="meta">法會｜班員／辦事人員分開報名</div>':'';
+    const typeBadge=ev.event_type==='dharma'
+      ? '<div class="meta">法會｜班員／辦事人員分開報名</div>'
+      : (ev.relay_enabled ? `<div class="meta">接龍項目：${esc(ev.relay_label||'接龍項目')}</div>` : '');
     const deadlineBadge=!ev.registration_open
       ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#fdecec;color:#a22;font-weight:600">報名已截止</div>'
       : (ev.registration_force_open ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#e8f8ee;color:#17723b">管理者已重新開放報名</div>' : '');
@@ -914,7 +1018,7 @@ try{
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
-        <button class="primary" ${ev.registration_open ? `onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`}"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'本人報名':'報名已截止'}</button>
+        <button class="primary" ${ev.registration_open ? `onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : (ev.relay_enabled ? `openRelaySelf(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`)}"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'本人報名':'報名已截止'}</button>
         <button class="secondary" ${ev.registration_open ? `onclick="openProxy(${ev.id},'${safeTitle}','${ev.event_type||'general'}')"` : 'disabled style="background:#eee;color:#999"'}>代人報名</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
@@ -977,6 +1081,8 @@ try{
   const fd=new FormData();
   fd.append('title',title);
   fd.append('event_type',document.getElementById('newType').value);
+  fd.append('relay_enabled',document.getElementById('newRelayEnabled').checked?'1':'0');
+  fd.append('relay_label',document.getElementById('newRelayLabel').value.trim());
   fd.append('event_date',document.getElementById('newDate').value);
   fd.append('location',document.getElementById('newLocation').value.trim());
   fd.append('registration_deadline',document.getElementById('newDeadline').value);
@@ -1062,6 +1168,9 @@ async function openEdit(id){
     document.getElementById('editEventId').value=ev.id;
     document.getElementById('editTitle').value=ev.title||'';
     document.getElementById('editType').value=ev.event_type||'general';
+    document.getElementById('editRelayEnabled').checked=!!ev.relay_enabled;
+    document.getElementById('editRelayLabel').value=ev.relay_label||'菜色';
+    toggleEditRelay();
     document.getElementById('editDate').value=ev.event_date||'';
     document.getElementById('editLocation').value=ev.location||'';
     document.getElementById('editDeadline').value=ev.registration_deadline||'';
@@ -1102,6 +1211,8 @@ async function submitEdit(btn){
     fd.append('event_id',eventId);
     fd.append('title',title);
     fd.append('event_type',document.getElementById('editType').value);
+    fd.append('relay_enabled',document.getElementById('editRelayEnabled').checked?'1':'0');
+    fd.append('relay_label',document.getElementById('editRelayLabel').value.trim());
     fd.append('event_date',document.getElementById('editDate').value);
     fd.append('location',document.getElementById('editLocation').value.trim());
     fd.append('registration_deadline',document.getElementById('editDeadline').value);
@@ -1196,12 +1307,37 @@ async function submitDharma(btn){
     dharmaDialog.close();showMsg(d.message);await loadEvents()
   }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
 }
+function openRelaySelf(id,title){
+  const ev=events.find(x=>x.id===id);
+  relaySelfEventId=id;
+  document.getElementById('relaySelfTitle').textContent='本人報名｜'+title;
+  document.getElementById('relaySelfLabel').textContent=((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
+  document.getElementById('relaySelfItems').innerHTML='';
+  addRelayInput('relaySelfItems');
+  relaySelfDialog.showModal();
+}
+async function submitRelaySelf(btn){
+  setBusy(btn,true,'送出中…');
+  try{
+    const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      event_id:relaySelfEventId,user_id:profile.userId,display_name:profile.displayName,
+      relay_items:relayValues('relaySelfItems')
+    })});
+    relaySelfDialog.close();showMsg(d.message);await loadEvents();
+  }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
+}
 async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 function openProxy(id,title,eventType){
   proxyEventId=id;proxyEventType=eventType||'general';
+  const ev=events.find(x=>x.id===id);
   document.getElementById('proxyTitle').textContent='代人報名｜'+title;
   document.getElementById('proxyNames').value='';
   document.getElementById('proxyDharmaOptions').style.display=proxyEventType==='dharma'?'block':'none';
+  const relayOn=proxyEventType==='general'&&ev&&ev.relay_enabled;
+  document.getElementById('proxyRelayOptions').style.display=relayOn?'block':'none';
+  document.getElementById('proxyRelayLabel').textContent=((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
+  document.getElementById('proxyRelayItems').innerHTML='';
+  if(relayOn)addRelayInput('proxyRelayItems');
   if(proxyEventType==='dharma'){
     document.getElementById('proxyDharmaRole').value='student';
     document.getElementById('proxyDay1').selectedIndex=0;
@@ -1223,6 +1359,8 @@ async function submitProxy(btn){
       body.day2_group=selectValue('proxyDay2');
       if(!body.day1_group&&!body.day2_group){showMsg('辦事人員至少要選擇一天的組別',false);return}
     }
+  }else if(document.getElementById('proxyRelayOptions').style.display!=='none'){
+    body.relay_items=relayValues('proxyRelayItems');
   }
   setBusy(btn,true,'送出中…');
   try{
@@ -1236,6 +1374,29 @@ function cancelBtn(id,p,title){
 function personText(p){
   const proxy=p.proxy_by_name ? `（${esc(p.proxy_by_name)} 代報）` : '';
   return `${esc(p.name)}${proxy}`;
+}
+function relayItemsText(p){ return (p.relay_items||[]).map(esc).join('、'); }
+function openRelayEditById(eventId,signupId,label){
+  const p=lastListPeople.find(x=>x.id===signupId);
+  if(!p)return;
+  relayEditEventId=eventId; relayEditSignupId=signupId;
+  document.getElementById('relayEditTitle').textContent='修改接龍｜'+p.name;
+  document.getElementById('relayEditLabel').textContent=(label||'接龍項目')+'（可填多項）';
+  document.getElementById('relayEditItems').innerHTML='';
+  (p.relay_items&&p.relay_items.length?p.relay_items:['']).forEach(x=>addRelayInput('relayEditItems',x));
+  relayEditDialog.showModal();
+}
+async function submitRelayEdit(btn){
+  setBusy(btn,true,'儲存中…');
+  try{
+    const d=await api('/api/liff/relay-items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      event_id:relayEditEventId,signup_id:relayEditSignupId,user_id:profile.userId,
+      relay_items:relayValues('relayEditItems')
+    })});
+    relayEditDialog.close();showMsg(d.message);
+    const ev=events.find(x=>x.id===relayEditEventId);
+    await showList(relayEditEventId,ev?ev.title:'活動');
+  }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
 }
 function dharmaPersonText(p){ return personText(p); }
 function dharmaListHtml(id,title,people){
@@ -1265,6 +1426,7 @@ async function showList(id,title){
   try{
     const d=await api('/api/liff/list?event_id='+id+'&user_id='+encodeURIComponent(profile.userId));
     document.getElementById('listTitle').textContent='報名名單｜'+title;
+    lastListPeople=d.people||[];
     if(!d.people.length){
       document.getElementById('listBody').innerHTML='目前尚無人報名';
     }else if(d.event_type==='dharma'){
@@ -1272,7 +1434,11 @@ async function showList(id,title){
     }else{
       document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
         const b=cancelBtn(id,p,title);
-        return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:7px 0"><span>${i+1}. ${personText(p)}</span>${b}</div>`
+        const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
+          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p)}</div>`:'';
+        const edit=d.relay_enabled&&p.can_cancel
+          ? `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openRelayEditById(${id},${p.id},'${String(d.relay_label||'接龍項目').replace(/'/g,"\\'")}')">修改接龍</button>`:'';
+        return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${edit}${b}</span></div>${items}</div>`
       }).join('');
     }
     listDialog.showModal()
@@ -1312,6 +1478,8 @@ def api_liff_create_event():
     user_id = str(request.form.get("user_id", "")).strip()
     title = str(request.form.get("title", "")).strip()
     event_type = str(request.form.get("event_type", "general")).strip() or "general"
+    relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
+    relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -1339,6 +1507,8 @@ def api_liff_create_event():
             dm_image_url=dm_image_url,
             registration_deadline=registration_deadline,
             event_type=event_type,
+            relay_enabled=relay_enabled,
+            relay_label=relay_label,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1357,6 +1527,8 @@ def api_liff_update_event():
     event_id = int(request.form.get("event_id", "0") or 0)
     title = str(request.form.get("title", "")).strip()
     event_type = str(request.form.get("event_type", "general")).strip() or "general"
+    relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
+    relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -1391,6 +1563,8 @@ def api_liff_update_event():
                 description=%s,
                 dm_image_url=%s,
                 event_type=%s,
+                relay_enabled=%s,
+                relay_label=%s,
                 registration_force_open=FALSE,
                 registration_manual_closed=FALSE
             WHERE id=%s AND group_id=%s
@@ -1403,6 +1577,8 @@ def api_liff_update_event():
                 description,
                 dm_image_url,
                 event_type,
+                bool(relay_enabled) if event_type == 'general' else False,
+                relay_label if relay_enabled and event_type == 'general' else None,
                 event_id,
                 group_id,
             ),
@@ -1553,6 +1729,8 @@ def api_liff_events():
             "auto_publish_list": bool(ev.get("auto_publish_list")),
             "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
             "reopened_after_close": bool(ev.get("reopened_after_close")),
+            "relay_enabled": bool(ev.get("relay_enabled")),
+            "relay_label": ev.get("relay_label") or "接龍項目",
         })
 
     return jsonify({"events": result})
@@ -1583,6 +1761,8 @@ def api_liff_event_detail():
             "auto_publish_list": bool(ev.get("auto_publish_list")),
             "list_published_at": ev.get("list_published_at").isoformat() if ev.get("list_published_at") else None,
             "reopened_after_close": bool(ev.get("reopened_after_close")),
+            "relay_enabled": bool(ev.get("relay_enabled")),
+            "relay_label": ev.get("relay_label") or "接龍項目",
         }
     })
 
@@ -1601,6 +1781,7 @@ def api_liff_signup():
     dharma_role = str(data.get("dharma_role", "")).strip() or None
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
+    relay_items = clean_relay_items(data.get("relay_items", []))
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
     if not registration_is_open(ev):
@@ -1623,9 +1804,11 @@ def api_liff_signup():
             return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
         attendance_option = dharma_role = day1_group = day2_group = None
+        if not ev.get('relay_enabled'):
+            relay_items = []
     if not add_signup(event_id, display_name, "self", line_user_id=user_id,
                       attendance_option=attendance_option, dharma_role=dharma_role,
-                      day1_group=day1_group, day2_group=day2_group):
+                      day1_group=day1_group, day2_group=day2_group, relay_items=relay_items):
         return jsonify({"error": f"{display_name} 已經報名過了"}), 409
     return jsonify({"message": "報名成功"})
 
@@ -1649,6 +1832,7 @@ def api_liff_proxy():
     dharma_role = str(data.get("dharma_role", "")).strip() or None
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
+    relay_items = clean_relay_items(data.get("relay_items", []))
     if (ev.get("event_type") or "general") == "dharma":
         valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
         if dharma_role == "student":
@@ -1667,11 +1851,13 @@ def api_liff_proxy():
             return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
         attendance_option = dharma_role = day1_group = day2_group = None
+    if (ev.get('event_type') or 'general') == 'dharma' or not ev.get('relay_enabled'):
+        relay_items = []
     added, dup = 0, []
     for name in names:
         if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name,
                       attendance_option=attendance_option, dharma_role=dharma_role,
-                      day1_group=day1_group, day2_group=day2_group):
+                      day1_group=day1_group, day2_group=day2_group, relay_items=relay_items):
             added += 1
         else:
             dup.append(name)
@@ -1714,9 +1900,47 @@ def api_liff_list():
             "day1_group": row.get("day1_group"),
             "day2_group": row.get("day2_group"),
             "proxy_by_name": row.get("proxy_by_name"),
+            "relay_items": parse_relay_items(row.get("relay_items")),
         })
 
-    return jsonify({"people": people, "event_type": ev.get("event_type") or "general"})
+    return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目"})
+
+
+@app.route("/api/liff/relay-items", methods=["POST"])
+def api_liff_update_relay_items():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+    event_id = int(data.get("event_id", 0) or 0)
+    signup_id = int(data.get("signup_id", 0) or 0)
+    user_id = str(data.get("user_id", "")).strip()
+    items = clean_relay_items(data.get("relay_items", []))
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev or (ev.get("event_type") or "general") != "general" or not ev.get("relay_enabled"):
+        return jsonify({"error": "這個活動沒有開啟接龍項目"}), 400
+    if not registration_is_open(ev):
+        return jsonify({"error": "報名已截止，無法修改接龍項目"}), 403
+
+    row = get_signup_by_id(event_id, signup_id)
+    if not row:
+        return jsonify({"error": "找不到這筆報名"}), 404
+    owned = (
+        (row.get("signup_type") == "self" and row.get("line_user_id") == user_id) or
+        (row.get("signup_type") == "proxy" and row.get("proxy_by_user_id") == user_id)
+    )
+    if not owned:
+        return jsonify({"error": "你只能修改自己或自己代報的接龍項目"}), 403
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE line_signups SET relay_items=%s WHERE id=%s AND event_id=%s",
+        (json.dumps(items, ensure_ascii=False), signup_id, event_id),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return jsonify({"message": "接龍項目已更新"})
 
 
 @app.route("/api/liff/cancel", methods=["POST"])
@@ -1760,7 +1984,7 @@ def _final_list_text(group_id, ev):
     conn = db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group, proxy_by_name
+        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group, proxy_by_name, relay_items
         FROM line_signups
         WHERE event_id=%s
         ORDER BY id
@@ -1774,8 +1998,11 @@ def _final_list_text(group_id, ev):
 
     if (ev.get("event_type") or "general") != "dharma":
         lines.append(f"報名人數：{len(rows)} 人")
+        relay_label = ev.get("relay_label") or "接龍項目"
         for i, r in enumerate(rows, 1):
-            lines.append(f"{i}. {_signup_display_name(r)}")
+            items = parse_relay_items(r.get("relay_items"))
+            suffix = f"｜{relay_label}：{'、'.join(items)}" if ev.get("relay_enabled") and items else ""
+            lines.append(f"{i}. {_signup_display_name(r)}{suffix}")
     else:
         students = [r for r in rows if r.get("dharma_role") == "student" or (not r.get("dharma_role") and r.get("attendance_option"))]
         staff = [r for r in rows if r.get("dharma_role") == "staff"]

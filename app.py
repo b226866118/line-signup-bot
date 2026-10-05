@@ -845,6 +845,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <div id="detailDesc" class="desc"></div>
 <button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
 </div></dialog>
+<dialog id="signupChoiceDialog"><div class="modal">
+<h3 id="signupChoiceTitle">報名</h3>
+<div style="font-size:14px;color:#666;margin-bottom:14px">請選擇報名方式</div>
+<button class="primary" style="width:100%;margin-bottom:10px" onclick="chooseSelfSignup(this)">本人報名</button>
+<button class="secondary" style="width:100%" onclick="chooseProxySignup()">幫別人報名</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="signupChoiceDialog.close()">取消</button>
+</div></dialog>
 <dialog id="relaySelfDialog"><div class="modal">
 <h3 id="relaySelfTitle">本人報名</h3>
 <div id="relaySelfLabel" style="font-weight:600;margin:8px 0"></div>
@@ -1018,8 +1025,7 @@ try{
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
-        <button class="primary" ${ev.registration_open ? `onclick="${ev.event_type==='dharma' ? `openDharma(${ev.id},'${safeTitle}')` : (ev.relay_enabled ? `openRelaySelf(${ev.id},'${safeTitle}')` : `selfSignup(${ev.id},this)`)}"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'本人報名':'報名已截止'}</button>
-        <button class="secondary" ${ev.registration_open ? `onclick="openProxy(${ev.id},'${safeTitle}','${ev.event_type||'general'}')"` : 'disabled style="background:#eee;color:#999"'}>代人報名</button>
+        <button class="primary" ${ev.registration_open ? `onclick="openSignupChoice(${ev.id},'${safeTitle}','${ev.event_type||'general'}')"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'立即報名':'報名已截止'}</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
@@ -1307,6 +1313,34 @@ async function submitDharma(btn){
     dharmaDialog.close();showMsg(d.message);await loadEvents()
   }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
 }
+let signupChoiceEventId=0, signupChoiceTitleText='', signupChoiceType='general';
+
+function openSignupChoice(id,title,eventType){
+  signupChoiceEventId=id;
+  signupChoiceTitleText=title;
+  signupChoiceType=eventType||'general';
+  document.getElementById('signupChoiceTitle').textContent='報名｜'+title;
+  signupChoiceDialog.showModal();
+}
+async function chooseSelfSignup(btn){
+  const ev=events.find(x=>x.id===signupChoiceEventId);
+  signupChoiceDialog.close();
+
+  if(signupChoiceType==='dharma'){
+    openDharma(signupChoiceEventId,signupChoiceTitleText);
+    return;
+  }
+  if(ev&&ev.relay_enabled){
+    openRelaySelf(signupChoiceEventId,signupChoiceTitleText);
+    return;
+  }
+  await selfSignup(signupChoiceEventId,btn);
+}
+function chooseProxySignup(){
+  signupChoiceDialog.close();
+  openProxy(signupChoiceEventId,signupChoiceTitleText,signupChoiceType);
+}
+
 function openRelaySelf(id,title){
   const ev=events.find(x=>x.id===id);
   relaySelfEventId=id;
@@ -1326,7 +1360,7 @@ async function submitRelaySelf(btn){
     relaySelfDialog.close();showMsg(d.message);await loadEvents();
   }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
 }
-async function selfSignup(id,btn){setBusy(btn,true);try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);const card=btn.closest('.card');const c=card&&card.querySelector('.count');if(c&&typeof d.count==='number')c.textContent=`目前 ${d.count} 人報名`}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
+async function selfSignup(id,btn){setBusy(btn,true,'送出中…');try{const d=await api('/api/liff/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:id,user_id:profile.userId,display_name:profile.displayName})});showMsg(d.message);await loadEvents()}catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}}
 function openProxy(id,title,eventType){
   proxyEventId=id;proxyEventType=eventType||'general';
   const ev=events.find(x=>x.id===id);

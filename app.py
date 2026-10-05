@@ -846,10 +846,55 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <button class="light" style="width:100%;margin-top:12px" onclick="detailDialog.close()">關閉</button>
 </div></dialog>
 <dialog id="signupChoiceDialog"><div class="modal">
-<h3 id="signupChoiceTitle">報名</h3>
-<div style="font-size:14px;color:#666;margin-bottom:14px">請選擇報名方式</div>
-<button class="primary" style="width:100%;margin-bottom:10px" onclick="chooseSelfSignup(this)">本人報名</button>
-<button class="secondary" style="width:100%" onclick="chooseProxySignup()">幫別人報名</button>
+<h3 id="signupChoiceTitle">立即報名</h3>
+
+<label style="display:flex;align-items:center;gap:8px;font-size:16px;color:#222;margin:6px 0 12px">
+  <input id="unifiedSelf" type="checkbox" checked style="width:auto;margin:0" onchange="toggleUnifiedSelf()">
+  我本人也要報名
+</label>
+
+<div id="unifiedDharmaOptions" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
+  <div style="font-size:13px;color:#666;margin-bottom:6px">以下法會選項會套用到這次送出的本人與代報人員。</div>
+  <label>報名身分</label>
+  <select id="unifiedDharmaRole" onchange="toggleUnifiedDharmaFields()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+    <option value="student">班員</option>
+    <option value="staff">辦事人員</option>
+  </select>
+  <div id="unifiedStudentFields">
+    <label>班員參班方式</label>
+    <select id="unifiedAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+      <option value="上兩天">上兩天</option>
+      <option value="第一天">第一天</option>
+      <option value="補第二天">補第二天</option>
+      <option value="加開第一天">加開第一天</option>
+    </select>
+  </div>
+  <div id="unifiedStaffFields" style="display:none">
+    <label>第一天組別（不參加可留白）</label>
+    <select id="unifiedDay1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+    <label>第二天組別（不參加可留白）</label>
+    <select id="unifiedDay2" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+  </div>
+</div>
+
+<div id="unifiedSelfRelay" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
+  <div id="unifiedSelfRelayLabel" style="font-weight:600;margin-bottom:6px">我的接龍項目</div>
+  <div id="unifiedSelfRelayItems"></div>
+  <button class="secondary" type="button" style="width:100%" onclick="addRelayInput('unifiedSelfRelayItems')">＋ 新增一項</button>
+</div>
+
+<div style="border-top:1px solid #eee;margin:14px 0"></div>
+<label style="font-size:15px;color:#222">順便幫其他人報名（可留空）</label>
+<textarea id="unifiedProxyNames" rows="4" placeholder="例如：王小明 李小華；可用空格、頓號、逗號或換行"></textarea>
+
+<div id="unifiedProxyRelay" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
+  <div id="unifiedProxyRelayLabel" style="font-weight:600;margin-bottom:6px">代報者的接龍項目</div>
+  <div id="unifiedProxyRelayItems"></div>
+  <button class="secondary" type="button" style="width:100%" onclick="addRelayInput('unifiedProxyRelayItems')">＋ 新增一項</button>
+  <div style="font-size:12px;color:#888;margin-top:6px">若一次代報多人，這批人會套用相同的接龍項目；若內容不同，可分次送出。</div>
+</div>
+
+<button class="primary" style="width:100%" onclick="submitUnifiedSignup(this)">送出報名</button>
 <button class="light" style="width:100%;margin-top:8px" onclick="signupChoiceDialog.close()">取消</button>
 </div></dialog>
 <dialog id="relaySelfDialog"><div class="modal">
@@ -1315,30 +1360,127 @@ async function submitDharma(btn){
 }
 let signupChoiceEventId=0, signupChoiceTitleText='', signupChoiceType='general';
 
+function fillUnifiedGroups(){
+  const opts=DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g||'不參加')}</option>`).join('');
+  document.getElementById('unifiedDay1').innerHTML=opts;
+  document.getElementById('unifiedDay2').innerHTML=opts;
+}
+function toggleUnifiedDharmaFields(){
+  const staff=document.getElementById('unifiedDharmaRole').value==='staff';
+  document.getElementById('unifiedStudentFields').style.display=staff?'none':'block';
+  document.getElementById('unifiedStaffFields').style.display=staff?'block':'none';
+}
+function toggleUnifiedSelf(){
+  const ev=events.find(x=>x.id===signupChoiceEventId);
+  const show=document.getElementById('unifiedSelf').checked && signupChoiceType==='general' && ev && ev.relay_enabled;
+  document.getElementById('unifiedSelfRelay').style.display=show?'block':'none';
+}
 function openSignupChoice(id,title,eventType){
   signupChoiceEventId=id;
   signupChoiceTitleText=title;
   signupChoiceType=eventType||'general';
-  document.getElementById('signupChoiceTitle').textContent='報名｜'+title;
+
+  const ev=events.find(x=>x.id===id);
+  document.getElementById('signupChoiceTitle').textContent='立即報名｜'+title;
+  document.getElementById('unifiedSelf').checked=true;
+  document.getElementById('unifiedProxyNames').value='';
+
+  const isDharma=signupChoiceType==='dharma';
+  document.getElementById('unifiedDharmaOptions').style.display=isDharma?'block':'none';
+
+  if(isDharma){
+    fillUnifiedGroups();
+    document.getElementById('unifiedDharmaRole').value='student';
+    document.getElementById('unifiedAttendance').value='上兩天';
+    document.getElementById('unifiedDay1').selectedIndex=0;
+    document.getElementById('unifiedDay2').selectedIndex=0;
+    toggleUnifiedDharmaFields();
+  }
+
+  const relayOn=!isDharma && ev && ev.relay_enabled;
+  document.getElementById('unifiedSelfRelay').style.display=relayOn?'block':'none';
+  document.getElementById('unifiedProxyRelay').style.display=relayOn?'block':'none';
+  document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
+  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
+  document.getElementById('unifiedSelfRelayItems').innerHTML='';
+  document.getElementById('unifiedProxyRelayItems').innerHTML='';
+  if(relayOn){
+    addRelayInput('unifiedSelfRelayItems');
+    addRelayInput('unifiedProxyRelayItems');
+  }
+
   signupChoiceDialog.showModal();
 }
-async function chooseSelfSignup(btn){
+
+async function submitUnifiedSignup(btn){
+  const includeSelf=document.getElementById('unifiedSelf').checked;
+  const proxyNames=document.getElementById('unifiedProxyNames').value.trim();
+
+  if(!includeSelf && !proxyNames){
+    showMsg('請勾選本人報名，或輸入要代報的人員',false);
+    return;
+  }
+
   const ev=events.find(x=>x.id===signupChoiceEventId);
-  signupChoiceDialog.close();
+  const common={event_id:signupChoiceEventId,user_id:profile.userId,display_name:profile.displayName};
 
   if(signupChoiceType==='dharma'){
-    openDharma(signupChoiceEventId,signupChoiceTitleText);
-    return;
+    common.dharma_role=selectValue('unifiedDharmaRole');
+    if(common.dharma_role==='student'){
+      common.attendance_option=selectValue('unifiedAttendance');
+    }else{
+      common.day1_group=selectValue('unifiedDay1');
+      common.day2_group=selectValue('unifiedDay2');
+      if(!common.day1_group&&!common.day2_group){
+        showMsg('辦事人員至少要選擇一天的組別',false);
+        return;
+      }
+    }
   }
-  if(ev&&ev.relay_enabled){
-    openRelaySelf(signupChoiceEventId,signupChoiceTitleText);
-    return;
+
+  setBusy(btn,true,'送出中…');
+  const msgs=[], errs=[];
+  try{
+    if(includeSelf){
+      const selfBody={...common};
+      if(signupChoiceType==='general' && ev && ev.relay_enabled){
+        selfBody.relay_items=relayValues('unifiedSelfRelayItems');
+      }
+      try{
+        const d=await api('/api/liff/signup',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(selfBody)
+        });
+        msgs.push('本人：'+d.message);
+      }catch(e){
+        errs.push('本人：'+e.message);
+      }
+    }
+
+    if(proxyNames){
+      const proxyBody={...common,names:proxyNames};
+      if(signupChoiceType==='general' && ev && ev.relay_enabled){
+        proxyBody.relay_items=relayValues('unifiedProxyRelayItems');
+      }
+      try{
+        const d=await api('/api/liff/proxy',{
+          method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(proxyBody)
+        });
+        msgs.push('代報：'+d.message);
+      }catch(e){
+        errs.push('代報：'+e.message);
+      }
+    }
+
+    if(msgs.length){
+      signupChoiceDialog.close();
+      showMsg(msgs.join('；')+(errs.length?'；'+errs.join('；'):''),!errs.length);
+      await loadEvents();
+    }else{
+      showMsg(errs.join('；')||'報名失敗',false);
+    }
+  }finally{
+    setBusy(btn,false);
   }
-  await selfSignup(signupChoiceEventId,btn);
-}
-function chooseProxySignup(){
-  signupChoiceDialog.close();
-  openProxy(signupChoiceEventId,signupChoiceTitleText,signupChoiceType);
 }
 
 function openRelaySelf(id,title){

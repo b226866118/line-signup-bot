@@ -935,6 +935,44 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <div style="font-size:12px;color:#888;margin:-2px 0 12px">一次代報多人時，這批人會套用相同的接龍項目；若不同請分開代報。</div>
 </div>
 <textarea id="proxyNames" rows="5" placeholder="可輸入多人：王小明 李小華；也可用頓號、逗號或換行"></textarea><button class="primary" style="width:100%" onclick="submitProxy(this)">送出代報</button><button class="light" style="width:100%;margin-top:8px" onclick="proxyDialog.close()">取消</button></div></dialog>
+<dialog id="adminSignupEditDialog"><div class="modal">
+<h3 id="adminSignupEditTitle">編輯報名資料</h3>
+<label>姓名</label><input id="adminSignupName">
+
+<div id="adminGeneralEditBox" style="display:none">
+  <div id="adminRelayEditBox" style="display:none">
+    <div id="adminRelayEditLabel" style="font-weight:600;margin:8px 0"></div>
+    <div id="adminRelayEditItems"></div>
+    <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addRelayInput('adminRelayEditItems')">＋ 新增一項</button>
+  </div>
+</div>
+
+<div id="adminDharmaEditBox" style="display:none">
+  <label>報名身分</label>
+  <select id="adminDharmaRole" onchange="toggleAdminDharmaFields()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+    <option value="student">班員</option>
+    <option value="staff">辦事人員</option>
+  </select>
+  <div id="adminStudentEditFields">
+    <label>班員參班方式</label>
+    <select id="adminAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+      <option value="上兩天">上兩天</option>
+      <option value="第一天">第一天</option>
+      <option value="補第二天">補第二天</option>
+      <option value="加開第一天">加開第一天</option>
+    </select>
+  </div>
+  <div id="adminStaffEditFields" style="display:none">
+    <label>第一天組別（不參加可留白）</label>
+    <select id="adminDay1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+    <label>第二天組別（不參加可留白）</label>
+    <select id="adminDay2" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+  </div>
+</div>
+
+<button class="primary" style="width:100%" onclick="submitAdminSignupEdit(this)">儲存修改</button>
+<button class="light" style="width:100%;margin-top:8px" onclick="adminSignupEditDialog.close()">取消</button>
+</div></dialog>
 <dialog id="listDialog"><div class="modal"><h3 id="listTitle">報名名單</h3><div id="listBody" style="line-height:1.8"></div><button class="light" style="width:100%;margin-top:12px" onclick="listDialog.close()">關閉</button></div></dialog>
 <script>
 const LIFF_ID="__LIFF_ID__";
@@ -987,6 +1025,7 @@ async function init(){
   fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
 let events=[];
 let lastListPeople=[];
+let adminEditEventId=0, adminEditSignupId=0, adminEditEventType='general', adminEditRelayEnabled=false, adminEditRelayLabel='接龍項目';
 let relaySelfEventId=0, relayEditEventId=0, relayEditSignupId=0;
 
 function addRelayInput(containerId,value=''){
@@ -1544,7 +1583,100 @@ async function submitProxy(btn){
     proxyDialog.close();showMsg(d.message);await loadEvents()
   }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
 }
+function fillAdminDharmaGroups(){
+  const opts=DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g||'不參加')}</option>`).join('');
+  document.getElementById('adminDay1').innerHTML=opts;
+  document.getElementById('adminDay2').innerHTML=opts;
+}
+function toggleAdminDharmaFields(){
+  const staff=document.getElementById('adminDharmaRole').value==='staff';
+  document.getElementById('adminStudentEditFields').style.display=staff?'none':'block';
+  document.getElementById('adminStaffEditFields').style.display=staff?'block':'none';
+}
+function openAdminSignupEdit(eventId,signupId){
+  if(!adminMode)return;
+  const ev=events.find(x=>x.id===eventId);
+  const p=lastListPeople.find(x=>x.id===signupId);
+  if(!ev||!p)return;
+
+  adminEditEventId=eventId;
+  adminEditSignupId=signupId;
+  adminEditEventType=ev.event_type||'general';
+  adminEditRelayEnabled=!!ev.relay_enabled;
+  adminEditRelayLabel=ev.relay_label||'接龍項目';
+
+  document.getElementById('adminSignupEditTitle').textContent='編輯報名｜'+p.name;
+  document.getElementById('adminSignupName').value=p.name||'';
+
+  const isDharma=adminEditEventType==='dharma';
+  document.getElementById('adminGeneralEditBox').style.display=isDharma?'none':'block';
+  document.getElementById('adminDharmaEditBox').style.display=isDharma?'block':'none';
+
+  document.getElementById('adminRelayEditBox').style.display=(!isDharma&&adminEditRelayEnabled)?'block':'none';
+  document.getElementById('adminRelayEditLabel').textContent=adminEditRelayLabel+'（可填多項）';
+  document.getElementById('adminRelayEditItems').innerHTML='';
+  if(!isDharma&&adminEditRelayEnabled){
+    (p.relay_items&&p.relay_items.length?p.relay_items:['']).forEach(x=>addRelayInput('adminRelayEditItems',x));
+  }
+
+  if(isDharma){
+    fillAdminDharmaGroups();
+    const role=p.dharma_role || (p.attendance_option?'student':'staff');
+    document.getElementById('adminDharmaRole').value=role;
+    document.getElementById('adminAttendance').value=p.attendance_option||'上兩天';
+    document.getElementById('adminDay1').value=p.day1_group||'';
+    document.getElementById('adminDay2').value=p.day2_group||'';
+    toggleAdminDharmaFields();
+  }
+
+  adminSignupEditDialog.showModal();
+}
+async function submitAdminSignupEdit(btn){
+  const name=document.getElementById('adminSignupName').value.trim();
+  if(!name){showMsg('姓名不能留空',false);return}
+
+  const body={
+    event_id:adminEditEventId,
+    signup_id:adminEditSignupId,
+    user_id:profile.userId,
+    person_name:name
+  };
+
+  if(adminEditEventType==='dharma'){
+    body.dharma_role=selectValue('adminDharmaRole');
+    if(body.dharma_role==='student'){
+      body.attendance_option=selectValue('adminAttendance');
+    }else{
+      body.day1_group=selectValue('adminDay1');
+      body.day2_group=selectValue('adminDay2');
+      if(!body.day1_group&&!body.day2_group){
+        showMsg('辦事人員至少要選擇一天的組別',false);return;
+      }
+    }
+  }else if(adminEditRelayEnabled){
+    body.relay_items=relayValues('adminRelayEditItems');
+  }
+
+  setBusy(btn,true,'儲存中…');
+  try{
+    const d=await api('/api/liff/admin-signup/update',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+    });
+    adminSignupEditDialog.close();
+    showMsg(d.message);
+    const ev=events.find(x=>x.id===adminEditEventId);
+    await showList(adminEditEventId,ev?ev.title:'活動');
+    await loadEvents();
+  }catch(e){showMsg(e.message,false)}finally{setBusy(btn,false)}
+}
+function adminButtons(id,p,title){
+  if(!adminMode)return '';
+  return `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openAdminSignupEdit(${id},${p.id})">編輯</button>
+  <button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">刪除</button>`;
+}
+
 function cancelBtn(id,p,title){
+  if(adminMode)return '';
   return p.can_cancel?`<button class="light" style="padding:5px 9px;margin-left:8px;color:#a22" onclick="cancelSignup(${id},${p.id},'${String(p.name).replace(/'/g,"\\'")}','${String(title).replace(/'/g,"\\'")}')">取消</button>`:'';
 }
 function personText(p){
@@ -1582,7 +1714,7 @@ function dharmaListHtml(id,title,people){
     html+='<h4 style="margin:8px 0">班員</h4>';
     ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
       const a=students.filter(p=>p.attendance_option===opt);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${adminButtons(id,p,title)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
     });
   }
   const staff=people.filter(p=>p.dharma_role==='staff');
@@ -1593,7 +1725,7 @@ function dharmaListHtml(id,title,people){
     html+=`<h4 style="margin:16px 0 6px">${day}辦事人員（${active.length}）</h4>`;
     DHARMA_GROUPS.filter(Boolean).forEach(g=>{
       const a=active.filter(p=>p[key]===g);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${g}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${adminButtons(id,p,title)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
     });
   });
   return html||'目前尚無人報名';
@@ -1612,9 +1744,10 @@ async function showList(id,title){
         const b=cancelBtn(id,p,title);
         const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
           ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p)}</div>`:'';
-        const edit=d.relay_enabled&&p.can_cancel
+        const edit=!adminMode&&d.relay_enabled&&p.can_cancel
           ? `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openRelayEditById(${id},${p.id},'${String(d.relay_label||'接龍項目').replace(/'/g,"\\'")}')">修改接龍</button>`:'';
-        return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${edit}${b}</span></div>${items}</div>`
+        const admin=adminButtons(id,p,title);
+        return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${admin}${edit}${b}</span></div>${items}</div>`
       }).join('');
     }
     listDialog.showModal()
@@ -2082,6 +2215,95 @@ def api_liff_list():
     return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目"})
 
 
+@app.route("/api/liff/admin-signup/update", methods=["POST"])
+def api_liff_admin_signup_update():
+    group_id = require_group_from_request()
+    data = request.get_json(force=True)
+
+    user_id = str(data.get("user_id", "")).strip()
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理報名資料的權限"}), 403
+
+    event_id = int(data.get("event_id", 0) or 0)
+    signup_id = int(data.get("signup_id", 0) or 0)
+    person_name = str(data.get("person_name", "")).strip()
+    if not person_name:
+        return jsonify({"error": "姓名不能留空"}), 400
+
+    ev = get_event_by_id(group_id, event_id)
+    if not ev:
+        return jsonify({"error": "找不到活動"}), 404
+    row = get_signup_by_id(event_id, signup_id)
+    if not row:
+        return jsonify({"error": "找不到這筆報名"}), 404
+
+    event_type = ev.get("event_type") or "general"
+    attendance_option = None
+    dharma_role = None
+    day1_group = None
+    day2_group = None
+    relay_items = []
+
+    if event_type == "dharma":
+        dharma_role = str(data.get("dharma_role", "")).strip()
+        valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
+        if dharma_role == "student":
+            attendance_option = str(data.get("attendance_option", "")).strip()
+            if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
+                return jsonify({"error": "請選擇正確的班員參班方式"}), 400
+        elif dharma_role == "staff":
+            day1_group = str(data.get("day1_group", "")).strip() or None
+            day2_group = str(data.get("day2_group", "")).strip() or None
+            if day1_group and day1_group not in valid_groups:
+                return jsonify({"error": "第一天組別不正確"}), 400
+            if day2_group and day2_group not in valid_groups:
+                return jsonify({"error": "第二天組別不正確"}), 400
+            if not day1_group and not day2_group:
+                return jsonify({"error": "辦事人員至少要選擇一天的組別"}), 400
+        else:
+            return jsonify({"error": "請選擇班員或辦事人員"}), 400
+    else:
+        if ev.get("relay_enabled"):
+            relay_items = clean_relay_items(data.get("relay_items", []))
+
+    conn = db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT id FROM line_signups WHERE event_id=%s AND person_name=%s AND id<>%s",
+        (event_id, person_name, signup_id),
+    )
+    if cur.fetchone():
+        cur.close()
+        release_db(conn)
+        return jsonify({"error": f"{person_name} 已經在報名名單中"}), 409
+
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE line_signups
+           SET person_name=%s,
+               attendance_option=%s,
+               dharma_role=%s,
+               day1_group=%s,
+               day2_group=%s,
+               relay_items=%s
+           WHERE id=%s AND event_id=%s""",
+        (
+            person_name,
+            attendance_option,
+            dharma_role,
+            day1_group,
+            day2_group,
+            json.dumps(relay_items, ensure_ascii=False),
+            signup_id,
+            event_id,
+        ),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
+    return jsonify({"message": f"已更新：{person_name}"})
+
+
 @app.route("/api/liff/relay-items", methods=["POST"])
 def api_liff_update_relay_items():
     group_id = require_group_from_request()
@@ -2139,11 +2361,18 @@ def api_liff_cancel():
     if not row:
         return jsonify({"error": "找不到這筆報名"}), 404
 
-    if not remove_owned_signup(event_id, signup_id, user_id):
+    if is_admin(user_id):
+        conn = db()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM line_signups WHERE id=%s AND event_id=%s", (signup_id, event_id))
+        conn.commit()
+        cur.close()
+        release_db(conn)
+    elif not remove_owned_signup(event_id, signup_id, user_id):
         return jsonify({"error": "你只能取消自己報名或自己代報的人"}), 403
 
     return jsonify({
-        "message": f"已取消：{row['person_name']}",
+        "message": f"已刪除：{row['person_name']}" if is_admin(user_id) else f"已取消：{row['person_name']}",
         "count": get_signup_count(event_id),
     })
 

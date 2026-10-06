@@ -1877,17 +1877,11 @@ init();
 
 @app.route("/liff", methods=["GET"])
 def liff_page():
-    group_id = request.args.get("g", "")
-    sig = request.args.get("sig", "")
-    if not valid_group_signature(group_id, sig):
-        return Response(
-            "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<div style='font-family:-apple-system,sans-serif;padding:32px;text-align:center'>"
-            "<h2>報名連結無效</h2><p>請從 LINE 群組中的「報名入口」重新開啟。</p></div>",
-            status=403,
-            mimetype="text/html",
-        )
+    # 不在伺服器這一層檢查 g/s。
+    # LINE LIFF 有時會把原本參數放進 liff.state，再由前端解析。
+    # 真正的群組簽章與停權檢查仍由 API 層執行。
     return Response(LIFF_HTML.replace("__LIFF_ID__", LIFF_ID), mimetype="text/html")
+
 
 
 def require_group_from_request(allow_disabled=False):

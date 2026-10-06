@@ -89,6 +89,15 @@ def init_db():
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day1_group TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day2_group TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS relay_items TEXT")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS line_group_settings (
+        group_id TEXT PRIMARY KEY,
+        disabled BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+    """)
+
     conn.commit()
     cur.close()
     release_db(conn)
@@ -149,6 +158,35 @@ def valid_group_signature(group_id: str, sig: str) -> bool:
 
 def is_admin(user_id: str) -> bool:
     return bool(user_id and user_id in ADMIN_USER_IDS)
+
+
+def group_entry_disabled(group_id: str) -> bool:
+    if not group_id:
+        return False
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT disabled FROM line_group_settings WHERE group_id=%s", (group_id,))
+    row = cur.fetchone()
+    cur.close()
+    release_db(conn)
+    return bool(row and row[0])
+
+
+def set_group_entry_disabled(group_id: str, disabled: bool):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO line_group_settings(group_id, disabled, updated_at)
+        VALUES (%s, %s, NOW())
+        ON CONFLICT (group_id)
+        DO UPDATE SET disabled=EXCLUDED.disabled, updated_at=NOW()
+        """,
+        (group_id, bool(disabled)),
+    )
+    conn.commit()
+    cur.close()
+    release_db(conn)
 
 
 def registration_is_open(ev) -> bool:
@@ -767,8 +805,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </style>
 </head>
 <body><div class="wrap"><h1>活動報名</h1><div class="sub" id="who">讀取 LINE 身分中…</div><div id="msg" class="msg"></div>
+<div id="groupDisabledBanner" class="card" style="display:none;background:#fff3f3;border:1px solid #f1b5b5">
+<div class="title" style="color:#a22">此群組報名入口目前已停用</div>
+<div style="font-size:14px;color:#666;margin-top:6px">活動與名單資料仍有保留；一般使用者目前無法操作報名功能。</div>
+</div>
 <div id="adminTools" class="card" style="display:none">
 <div class="title">活動管理</div>
+<button id="groupAccessBtn" class="light" style="width:100%;margin:10px 0 4px;color:#a22" onclick="toggleGroupAccess()">停用此群組報名入口</button>
 <div class="actions" style="grid-template-columns:1fr 1fr">
 <button class="primary" onclick="openCreate()">＋ 新增活動</button>
 <button class="light" onclick="toggleEditMode()">編輯活動</button>
@@ -999,7 +1042,7 @@ function getLiffParams(){
 
 const lp=getLiffParams();
 const groupId=lp.g, sig=lp.s;
-let profile=null, proxyEventId=null, proxyEventType="general", adminMode=false, closeMode=false, editMode=false, dharmaEventId=null;
+let profile=null, proxyEventId=null, proxyEventType="general", adminMode=false, groupDisabled=false, closeMode=false, editMode=false, dharmaEventId=null;
 function setBusy(btn,busy,label='處理中…'){if(!btn)return;if(busy){btn.dataset.old=btn.textContent;btn.textContent=label;btn.disabled=true;btn.style.opacity='.6'}else{btn.textContent=btn.dataset.old||btn.textContent;btn.disabled=false;btn.style.opacity='1'}}
 function showMsg(t,ok=true){const e=document.getElementById('msg');e.className='msg '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000)}
 async function api(path,opt={}){
@@ -1022,7 +1065,77 @@ async function api(path,opt={}){
 }
 function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 async function init(){
-  fillDharmaGroups();if(!groupId||!sig){document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';return} await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()){liff.login({redirectUri:location.href});return} profile=await liff.getProfile();document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中'; try{const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));adminMode=!!me.is_admin;document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');if(adminMode)document.getElementById('adminTools').style.display='block'}catch(e){document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';console.error(e)} loadEvents()}
+  fillDharmaGroups();
+  if(!groupId||!sig){
+    document.getElementById('events').innerHTML='此連結無效，請從群組中的「報名入口」開啟。';
+    return;
+  }
+  await liff.init({liffId:LIFF_ID});
+  if(!liff.isLoggedIn()){
+    liff.login({redirectUri:location.href});
+    return;
+  }
+  profile=await liff.getProfile();
+  document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查中';
+
+  try{
+    const me=await api('/api/liff/me?user_id='+encodeURIComponent(profile.userId));
+    adminMode=!!me.is_admin;
+    groupDisabled=!!me.group_disabled;
+    document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：'+(adminMode?'是':'否');
+
+    if(groupDisabled){
+      document.getElementById('groupDisabledBanner').style.display='block';
+    }
+
+    if(adminMode){
+      document.getElementById('adminTools').style.display='block';
+      updateGroupAccessButton();
+    }
+
+    if(groupDisabled && !adminMode){
+      document.getElementById('events').innerHTML='<div class="card">此群組報名入口目前已停用。</div>';
+      return;
+    }
+  }catch(e){
+    document.getElementById('who').textContent='你好，'+profile.displayName+'｜管理者：檢查失敗';
+    console.error(e);
+  }
+  loadEvents();
+}
+function updateGroupAccessButton(){
+  const btn=document.getElementById('groupAccessBtn');
+  if(!btn)return;
+  btn.textContent=groupDisabled?'重新啟用此群組報名入口':'停用此群組報名入口';
+  btn.style.color=groupDisabled?'#17723b':'#a22';
+}
+async function toggleGroupAccess(){
+  if(!adminMode)return;
+  const next=!groupDisabled;
+  const wording=next?'停用':'重新啟用';
+  if(!confirm('確定要'+wording+'這個群組的報名入口嗎？'))return;
+
+  try{
+    const d=await api('/api/liff/group-access',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({user_id:profile.userId,disabled:next})
+    });
+    groupDisabled=!!d.group_disabled;
+    document.getElementById('groupDisabledBanner').style.display=groupDisabled?'block':'none';
+    updateGroupAccessButton();
+    showMsg(d.message);
+
+    if(groupDisabled){
+      document.getElementById('events').innerHTML='<div class="card">此群組報名入口目前已停用。資料仍有保留。</div>';
+    }else{
+      await loadEvents();
+    }
+  }catch(e){
+    showMsg(e.message,false);
+  }
+}
+
 let events=[];
 let lastListPeople=[];
 let adminEditEventId=0, adminEditSignupId=0, adminEditEventType='general', adminEditRelayEnabled=false, adminEditRelayLabel='接龍項目';
@@ -1063,6 +1176,10 @@ function toggleEditRelayLabel(){
 }
 
 async function loadEvents(){
+if(groupDisabled){
+  document.getElementById('events').innerHTML='<div class="card">此群組報名入口目前已停用。資料仍有保留。</div>';
+  return;
+}
 try{
   const d=await api('/api/liff/events');
   events=d.events || [];
@@ -1760,23 +1877,55 @@ init();
 
 @app.route("/liff", methods=["GET"])
 def liff_page():
+    group_id = request.args.get("g", "")
+    sig = request.args.get("sig", "")
+    if not valid_group_signature(group_id, sig):
+        return Response(
+            "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<div style='font-family:-apple-system,sans-serif;padding:32px;text-align:center'>"
+            "<h2>報名連結無效</h2><p>請從 LINE 群組中的「報名入口」重新開啟。</p></div>",
+            status=403,
+            mimetype="text/html",
+        )
     return Response(LIFF_HTML.replace("__LIFF_ID__", LIFF_ID), mimetype="text/html")
 
 
-def require_group_from_request():
+def require_group_from_request(allow_disabled=False):
     group_id = request.args.get("g", "")
     sig = request.args.get("sig", "")
     if not valid_group_signature(group_id, sig):
         abort(403)
+    if not allow_disabled and group_entry_disabled(group_id):
+        return abort(403, description="此群組報名入口已停用")
     return group_id
 
 
 
 @app.route("/api/liff/me", methods=["GET"])
 def api_liff_me():
-    require_group_from_request()
+    group_id = require_group_from_request(allow_disabled=True)
     user_id = request.args.get("user_id", "")
-    return jsonify({"is_admin": is_admin(user_id)})
+    return jsonify({
+        "is_admin": is_admin(user_id),
+        "group_disabled": group_entry_disabled(group_id),
+    })
+
+
+@app.route("/api/liff/group-access", methods=["POST"])
+def api_liff_group_access():
+    group_id = require_group_from_request(allow_disabled=True)
+    data = request.get_json(force=True)
+    user_id = str(data.get("user_id", "")).strip()
+    disabled = bool(data.get("disabled"))
+
+    if not is_admin(user_id):
+        return jsonify({"error": "你沒有管理此群組報名入口的權限"}), 403
+
+    set_group_entry_disabled(group_id, disabled)
+    return jsonify({
+        "message": "已停用此群組報名入口" if disabled else "已重新啟用此群組報名入口",
+        "group_disabled": disabled,
+    })
 
 
 @app.route("/api/liff/events/create", methods=["POST"])
@@ -2506,6 +2655,8 @@ def cron_publish_deadline_lists():
 
     published = []
     for ev in events:
+        if group_entry_disabled(ev.get("group_id")):
+            continue
         d = ev.get("registration_deadline")
         if isinstance(d, str):
             d = date.fromisoformat(d[:10])

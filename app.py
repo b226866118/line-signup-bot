@@ -1477,7 +1477,7 @@ try{
 const DHARMA_GROUPS=['服務','文書','接待','總務','辦道','壇務','炊事'];
 function fillDharmaGroups(){
   document.querySelectorAll('.dharma-group').forEach(s=>{
-    s.innerHTML='<option value="">留白</option>'+DHARMA_GROUPS.map(x=>`<option value="${x}">${x}</option>`).join('');
+    s.innerHTML='<option value="">&nbsp;</option>'+DHARMA_GROUPS.map(x=>`<option value="${x}">${x}</option>`).join('');
     s.value='';
   });
 }
@@ -1525,7 +1525,7 @@ async function submitDharma(btn){
 let signupChoiceEventId=0, signupChoiceTitleText='', signupChoiceType='general';
 
 function fillUnifiedGroups(){
-  const opts='<option value="">留白</option>'+DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('');
+  const opts='<option value="">&nbsp;</option>'+DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('');
   document.getElementById('unifiedDay1').innerHTML=opts;
   document.getElementById('unifiedDay2').innerHTML=opts;
 }
@@ -1560,7 +1560,7 @@ function getProxyStudentPairs(){
 }
 function staffGroupOptions(selected=''){
   const values=['',...DHARMA_GROUPS];
-  return values.map(g=>`<option value="${esc(g)}"${g===selected?' selected':''}>${g?esc(g):'留白'}</option>`).join('');
+  return values.map(g=>`<option value="${esc(g)}"${g===selected?' selected':''}>${g?esc(g):'&nbsp;'}</option>`).join('');
 }
 function addProxyStaffRow(name='',day1='',day2=''){
   const root=document.getElementById('unifiedProxyStaffRows');

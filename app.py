@@ -899,21 +899,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </label>
 
 <div id="unifiedDharmaOptions" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
-  <div style="font-size:13px;color:#666;margin-bottom:6px">以下法會選項會套用到這次送出的本人與代報人員。</div>
+  <div style="font-size:13px;color:#666;margin-bottom:6px">請先選擇報名身分；班員的參班方式會在每位班員資料中個別選擇。</div>
   <label>報名身分</label>
   <select id="unifiedDharmaRole" onchange="toggleUnifiedDharmaFields()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
     <option value="student">班員</option>
     <option value="staff">辦事人員</option>
   </select>
-  <div id="unifiedStudentFields">
-    <label>班員參班方式</label>
-    <select id="unifiedAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
-      <option value="上兩天">上兩天</option>
-      <option value="第一天">第一天</option>
-      <option value="補第二天">補第二天</option>
-      <option value="加開第一天">加開第一天</option>
-    </select>
-  </div>
+  <div id="unifiedStudentFields" style="display:none"></div>
   <div id="unifiedStaffFields" style="display:none">
     <label>第一天工作（不參加可留白）</label>
     <select id="unifiedDay1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
@@ -1545,6 +1537,13 @@ function addProxyStudentRow(name='',leader=''){
   row.innerHTML=`
     <label style="margin-top:0">班員姓名</label>
     <input class="proxy-student-name" value="${esc(name)}" placeholder="班員姓名">
+    <label>參班方式 *</label>
+    <select class="proxy-student-attendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+      <option value="上兩天">上兩天</option>
+      <option value="第一天">第一天</option>
+      <option value="補第二天">補第二天</option>
+      <option value="加開第一天">加開第一天</option>
+    </select>
     <label>帶班人員 *</label>
     <input class="proxy-student-leader" value="${esc(leader)}" placeholder="帶班人員姓名">
     <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除這位</button>`;
@@ -1554,6 +1553,7 @@ function getProxyStudentPairs(){
   return Array.from(document.querySelectorAll('#unifiedProxyStudentRows .proxy-student-row'))
     .map(row=>({
       name:row.querySelector('.proxy-student-name').value.trim(),
+      attendance_option:row.querySelector('.proxy-student-attendance').value.trim(),
       leader_name:row.querySelector('.proxy-student-leader').value.trim()
     }))
     .filter(x=>x.name||x.leader_name);
@@ -1615,7 +1615,6 @@ function openSignupChoice(id,title,eventType){
   if(isDharma){
     fillUnifiedGroups();
     document.getElementById('unifiedDharmaRole').value='student';
-    document.getElementById('unifiedAttendance').value='上兩天';
     document.getElementById('unifiedDay1').selectedIndex=0;
     document.getElementById('unifiedDay2').selectedIndex=0;
     document.getElementById('unifiedProxyStudentRows').innerHTML='';
@@ -1641,7 +1640,11 @@ function openSignupChoice(id,title,eventType){
 }
 
 async function submitUnifiedSignup(btn){
-  const includeSelf=document.getElementById('unifiedSelf').checked;
+  let includeSelf=document.getElementById('unifiedSelf').checked;
+  if(signupChoiceType==='dharma' && selectValue('unifiedDharmaRole')==='student'){
+    includeSelf=false;
+    document.getElementById('unifiedSelf').checked=false;
+  }
   let proxyNames=document.getElementById('unifiedProxyNames').value.trim();
   let proxyStudentPairs=[];
   let proxyStaffPairs=[];
@@ -1664,9 +1667,11 @@ async function submitUnifiedSignup(btn){
   if(signupChoiceType==='dharma'){
     common.dharma_role=selectValue('unifiedDharmaRole');
     if(common.dharma_role==='student'){
-      common.attendance_option=selectValue('unifiedAttendance');
       for(const p of proxyStudentPairs){
-        if(!p.name || !p.leader_name){showMsg('每位代報班員都要填寫班員姓名與帶班人員',false);return;}
+        if(!p.name || !p.leader_name || !p.attendance_option){
+          showMsg('每位代報班員都要填寫班員姓名、參班方式與帶班人員',false);
+          return;
+        }
       }
     }else{
       common.day1_group=selectValue('unifiedDay1');
@@ -2391,26 +2396,26 @@ def api_liff_proxy():
     if event_type == "dharma":
         valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
         if dharma_role == "student":
-            if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
-                return jsonify({"error": "請選擇班員參班方式"}), 400
             pairs = data.get("student_pairs", [])
             if not isinstance(pairs, list):
                 pairs = []
             cleaned = []
+            valid_attendance = {"上兩天", "第一天", "補第二天", "加開第一天"}
             for p in pairs:
                 if not isinstance(p, dict):
                     continue
                 name = str(p.get("name", "")).strip()
+                p_attendance = str(p.get("attendance_option", "")).strip()
                 leader = str(p.get("leader_name", "")).strip()
-                if not name or not leader:
-                    return jsonify({"error": "每位班員都要填寫姓名與帶班人員"}), 400
-                cleaned.append((name, leader))
+                if not name or not leader or p_attendance not in valid_attendance:
+                    return jsonify({"error": "每位班員都要填寫姓名、參班方式與帶班人員"}), 400
+                cleaned.append((name, p_attendance, leader))
             if not cleaned:
                 return jsonify({"error": "請輸入至少一位班員"}), 400
-            for name, leader in cleaned:
+            for name, p_attendance, leader in cleaned:
                 if add_signup(event_id, name, "proxy",
                               proxy_by_user_id=user_id, proxy_by_name=display_name,
-                              attendance_option=attendance_option, dharma_role="student",
+                              attendance_option=p_attendance, dharma_role="student",
                               day1_group=None, day2_group=None, relay_items=[],
                               leader_name=leader):
                     added += 1

@@ -89,6 +89,7 @@ def init_db():
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day1_group TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS day2_group TEXT")
     cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS relay_items TEXT")
+    cur.execute("ALTER TABLE line_signups ADD COLUMN IF NOT EXISTS leader_name TEXT")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_group_settings (
@@ -392,7 +393,7 @@ def get_signup_count(event_id: int):
 def add_signup(event_id, person_name, signup_type, line_user_id=None,
                proxy_by_user_id=None, proxy_by_name=None,
                attendance_option=None, dharma_role=None,
-               day1_group=None, day2_group=None, relay_items=None):
+               day1_group=None, day2_group=None, relay_items=None, leader_name=None):
     conn = db()
     cur = conn.cursor()
     try:
@@ -400,14 +401,15 @@ def add_signup(event_id, person_name, signup_type, line_user_id=None,
             INSERT INTO line_signups (
                 event_id, person_name, line_user_id, signup_type,
                 proxy_by_user_id, proxy_by_name, created_at,
-                attendance_option, dharma_role, day1_group, day2_group, relay_items
+                attendance_option, dharma_role, day1_group, day2_group, relay_items, leader_name
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             event_id, person_name, line_user_id, signup_type,
             proxy_by_user_id, proxy_by_name, datetime.now(),
             attendance_option, dharma_role, day1_group, day2_group,
             json.dumps(relay_items or [], ensure_ascii=False),
+            leader_name,
         ))
         conn.commit()
         return True
@@ -911,6 +913,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
       <option value="補第二天">補第二天</option>
       <option value="加開第一天">加開第一天</option>
     </select>
+    <label>帶班人員 *</label>
+    <input id="unifiedSelfLeader" placeholder="請輸入帶班人員姓名">
   </div>
   <div id="unifiedStaffFields" style="display:none">
     <label>第一天組別（不參加可留白）</label>
@@ -928,6 +932,11 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 
 <div style="border-top:1px solid #eee;margin:14px 0"></div>
 <label style="font-size:15px;color:#222">順便幫其他人報名（可留空）</label>
+<div id="unifiedProxyStudentPairs" style="display:none">
+  <div id="unifiedProxyStudentRows"></div>
+  <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addProxyStudentRow()">＋ 新增一位班員</button>
+  <div style="font-size:12px;color:#888;margin:-2px 0 10px">每位班員都可以填自己的帶班人員。</div>
+</div>
 <textarea id="unifiedProxyNames" rows="4" placeholder="例如：王小明 李小華；可用空格、頓號、逗號或換行"></textarea>
 
 <div id="unifiedProxyRelay" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
@@ -1004,6 +1013,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
       <option value="補第二天">補第二天</option>
       <option value="加開第一天">加開第一天</option>
     </select>
+    <label>帶班人員 *</label>
+    <input id="adminLeaderName" placeholder="帶班人員姓名">
   </div>
   <div id="adminStaffEditFields" style="display:none">
     <label>第一天組別（不參加可留白）</label>
@@ -1521,10 +1532,33 @@ function fillUnifiedGroups(){
   document.getElementById('unifiedDay1').innerHTML=opts;
   document.getElementById('unifiedDay2').innerHTML=opts;
 }
+function addProxyStudentRow(name='',leader=''){
+  const root=document.getElementById('unifiedProxyStudentRows');
+  const row=document.createElement('div');
+  row.className='proxy-student-row';
+  row.style.cssText='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:8px;background:#fff';
+  row.innerHTML=`
+    <label style="margin-top:0">班員姓名</label>
+    <input class="proxy-student-name" value="${esc(name)}" placeholder="班員姓名">
+    <label>帶班人員 *</label>
+    <input class="proxy-student-leader" value="${esc(leader)}" placeholder="帶班人員姓名">
+    <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除這位</button>`;
+  root.appendChild(row);
+}
+function getProxyStudentPairs(){
+  return Array.from(document.querySelectorAll('#unifiedProxyStudentRows .proxy-student-row'))
+    .map(row=>({
+      name:row.querySelector('.proxy-student-name').value.trim(),
+      leader_name:row.querySelector('.proxy-student-leader').value.trim()
+    }))
+    .filter(x=>x.name||x.leader_name);
+}
 function toggleUnifiedDharmaFields(){
   const staff=document.getElementById('unifiedDharmaRole').value==='staff';
   document.getElementById('unifiedStudentFields').style.display=staff?'none':'block';
   document.getElementById('unifiedStaffFields').style.display=staff?'block':'none';
+  document.getElementById('unifiedProxyStudentPairs').style.display=staff?'none':'block';
+  document.getElementById('unifiedProxyNames').style.display=staff?'block':'none';
 }
 function toggleUnifiedSelf(){
   const ev=events.find(x=>x.id===signupChoiceEventId);
@@ -1548,8 +1582,11 @@ function openSignupChoice(id,title,eventType){
     fillUnifiedGroups();
     document.getElementById('unifiedDharmaRole').value='student';
     document.getElementById('unifiedAttendance').value='上兩天';
+    document.getElementById('unifiedSelfLeader').value='';
     document.getElementById('unifiedDay1').selectedIndex=0;
     document.getElementById('unifiedDay2').selectedIndex=0;
+    document.getElementById('unifiedProxyStudentRows').innerHTML='';
+    addProxyStudentRow();
     toggleUnifiedDharmaFields();
   }
 
@@ -1570,9 +1607,15 @@ function openSignupChoice(id,title,eventType){
 
 async function submitUnifiedSignup(btn){
   const includeSelf=document.getElementById('unifiedSelf').checked;
-  const proxyNames=document.getElementById('unifiedProxyNames').value.trim();
+  let proxyNames=document.getElementById('unifiedProxyNames').value.trim();
+  let proxyStudentPairs=[];
 
-  if(!includeSelf && !proxyNames){
+  if(signupChoiceType==='dharma' && selectValue('unifiedDharmaRole')==='student'){
+    proxyStudentPairs=getProxyStudentPairs();
+    proxyNames='';
+  }
+
+  if(!includeSelf && !proxyNames && !proxyStudentPairs.length){
     showMsg('請勾選本人報名，或輸入要代報的人員',false);
     return;
   }
@@ -1584,6 +1627,13 @@ async function submitUnifiedSignup(btn){
     common.dharma_role=selectValue('unifiedDharmaRole');
     if(common.dharma_role==='student'){
       common.attendance_option=selectValue('unifiedAttendance');
+      if(includeSelf){
+        common.leader_name=document.getElementById('unifiedSelfLeader').value.trim();
+        if(!common.leader_name){showMsg('請填寫你的帶班人員',false);return;}
+      }
+      for(const p of proxyStudentPairs){
+        if(!p.name || !p.leader_name){showMsg('每位代報班員都要填寫班員姓名與帶班人員',false);return;}
+      }
     }else{
       common.day1_group=selectValue('unifiedDay1');
       common.day2_group=selectValue('unifiedDay2');
@@ -1612,8 +1662,12 @@ async function submitUnifiedSignup(btn){
       }
     }
 
-    if(proxyNames){
+    if(proxyNames || proxyStudentPairs.length){
       const proxyBody={...common,names:proxyNames};
+      if(signupChoiceType==='dharma' && common.dharma_role==='student'){
+        proxyBody.student_pairs=proxyStudentPairs;
+        delete proxyBody.leader_name;
+      }
       if(signupChoiceType==='general' && ev && ev.relay_enabled){
         proxyBody.relay_items=relayValues('unifiedProxyRelayItems');
       }
@@ -1741,6 +1795,7 @@ function openAdminSignupEdit(eventId,signupId){
     const role=p.dharma_role || (p.attendance_option?'student':'staff');
     document.getElementById('adminDharmaRole').value=role;
     document.getElementById('adminAttendance').value=p.attendance_option||'上兩天';
+    document.getElementById('adminLeaderName').value=p.leader_name||'';
     document.getElementById('adminDay1').value=p.day1_group||'';
     document.getElementById('adminDay2').value=p.day2_group||'';
     toggleAdminDharmaFields();
@@ -1763,6 +1818,8 @@ async function submitAdminSignupEdit(btn){
     body.dharma_role=selectValue('adminDharmaRole');
     if(body.dharma_role==='student'){
       body.attendance_option=selectValue('adminAttendance');
+      body.leader_name=document.getElementById('adminLeaderName').value.trim();
+      if(!body.leader_name){showMsg('請填寫帶班人員',false);return}
     }else{
       body.day1_group=selectValue('adminDay1');
       body.day2_group=selectValue('adminDay2');
@@ -1831,7 +1888,7 @@ function dharmaListHtml(id,title,people){
     html+='<h4 style="margin:8px 0">班員</h4>';
     ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
       const a=students.filter(p=>p.attendance_option===opt);
-      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>`<div style="margin:6px 0">${dharmaPersonText(p)}${adminButtons(id,p,title)}${cancelBtn(id,p,title)}</div>`).join('')+'</div>';
+      if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>{const proxy=p.proxy_by_name?`（${esc(p.proxy_by_name)} 代報）`:'';const leader=p.leader_name?` <span style="color:#666">→ ${esc(p.leader_name)}</span>`:'';return `<div style="margin:6px 0">${esc(p.name)}${leader}${proxy}${adminButtons(id,p,title)}${cancelBtn(id,p,title)}</div>`}).join('')+'</div>';
     });
   }
   const staff=people.filter(p=>p.dharma_role==='staff');
@@ -2233,6 +2290,7 @@ def api_liff_signup():
     dharma_role = str(data.get("dharma_role", "")).strip() or None
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
+    leader_name = str(data.get("leader_name", "")).strip() or None
     relay_items = clean_relay_items(data.get("relay_items", []))
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
@@ -2243,6 +2301,8 @@ def api_liff_signup():
         if dharma_role == "student":
             if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
                 return jsonify({"error": "請選擇班員參班方式"}), 400
+            if not leader_name:
+                return jsonify({"error": "班員請填寫帶班人員"}), 400
             day1_group = day2_group = None
         elif dharma_role == "staff":
             attendance_option = None
@@ -2255,12 +2315,13 @@ def api_liff_signup():
         else:
             return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
-        attendance_option = dharma_role = day1_group = day2_group = None
+        attendance_option = dharma_role = day1_group = day2_group = leader_name = None
         if not ev.get('relay_enabled'):
             relay_items = []
     if not add_signup(event_id, display_name, "self", line_user_id=user_id,
                       attendance_option=attendance_option, dharma_role=dharma_role,
-                      day1_group=day1_group, day2_group=day2_group, relay_items=relay_items):
+                      day1_group=day1_group, day2_group=day2_group, relay_items=relay_items,
+                      leader_name=leader_name):
         return jsonify({"error": f"{display_name} 已經報名過了"}), 409
     return jsonify({"message": "報名成功"})
 
@@ -2273,11 +2334,9 @@ def api_liff_proxy():
     ev = get_event_by_id(group_id, event_id)
     if not ev:
         return jsonify({"error": "找不到活動"}), 404
-    names = split_names(str(data.get("names", "")).strip())
-    if not names:
-        return jsonify({"error": "請輸入至少一個姓名"}), 400
     if not registration_is_open(ev):
         return jsonify({"error": "此活動報名已截止"}), 403
+
     display_name = str(data.get("display_name", "")).strip()
     user_id = str(data.get("user_id", "")).strip()
     attendance_option = str(data.get("attendance_option", "")).strip() or None
@@ -2285,34 +2344,72 @@ def api_liff_proxy():
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
     relay_items = clean_relay_items(data.get("relay_items", []))
-    if (ev.get("event_type") or "general") == "dharma":
+    event_type = ev.get("event_type") or "general"
+    added, dup = 0, []
+
+    if event_type == "dharma":
         valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
         if dharma_role == "student":
             if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
                 return jsonify({"error": "請選擇班員參班方式"}), 400
-            day1_group = day2_group = None
+            pairs = data.get("student_pairs", [])
+            if not isinstance(pairs, list):
+                pairs = []
+            cleaned = []
+            for p in pairs:
+                if not isinstance(p, dict):
+                    continue
+                name = str(p.get("name", "")).strip()
+                leader = str(p.get("leader_name", "")).strip()
+                if not name or not leader:
+                    return jsonify({"error": "每位班員都要填寫姓名與帶班人員"}), 400
+                cleaned.append((name, leader))
+            if not cleaned:
+                return jsonify({"error": "請輸入至少一位班員"}), 400
+            for name, leader in cleaned:
+                if add_signup(event_id, name, "proxy",
+                              proxy_by_user_id=user_id, proxy_by_name=display_name,
+                              attendance_option=attendance_option, dharma_role="student",
+                              day1_group=None, day2_group=None, relay_items=[],
+                              leader_name=leader):
+                    added += 1
+                else:
+                    dup.append(name)
         elif dharma_role == "staff":
-            attendance_option = None
             if day1_group and day1_group not in valid_groups:
                 return jsonify({"error": "第一天組別不正確"}), 400
             if day2_group and day2_group not in valid_groups:
                 return jsonify({"error": "第二天組別不正確"}), 400
             if not day1_group and not day2_group:
                 return jsonify({"error": "辦事人員至少要選擇一天的組別"}), 400
+            names = split_names(str(data.get("names", "")).strip())
+            if not names:
+                return jsonify({"error": "請輸入至少一個姓名"}), 400
+            for name in names:
+                if add_signup(event_id, name, "proxy",
+                              proxy_by_user_id=user_id, proxy_by_name=display_name,
+                              attendance_option=None, dharma_role="staff",
+                              day1_group=day1_group, day2_group=day2_group,
+                              relay_items=[], leader_name=None):
+                    added += 1
+                else:
+                    dup.append(name)
         else:
             return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
-        attendance_option = dharma_role = day1_group = day2_group = None
-    if (ev.get('event_type') or 'general') == 'dharma' or not ev.get('relay_enabled'):
-        relay_items = []
-    added, dup = 0, []
-    for name in names:
-        if add_signup(event_id, name, "proxy", proxy_by_user_id=user_id, proxy_by_name=display_name,
-                      attendance_option=attendance_option, dharma_role=dharma_role,
-                      day1_group=day1_group, day2_group=day2_group, relay_items=relay_items):
-            added += 1
-        else:
-            dup.append(name)
+        names = split_names(str(data.get("names", "")).strip())
+        if not names:
+            return jsonify({"error": "請輸入至少一個姓名"}), 400
+        if not ev.get("relay_enabled"):
+            relay_items = []
+        for name in names:
+            if add_signup(event_id, name, "proxy",
+                          proxy_by_user_id=user_id, proxy_by_name=display_name,
+                          relay_items=relay_items, leader_name=None):
+                added += 1
+            else:
+                dup.append(name)
+
     msg = f"已成功加入 {added} 人" if not dup else f"已加入 {added} 人；重複：{'、'.join(dup)}"
     return jsonify({"message": msg})
 
@@ -2351,6 +2448,7 @@ def api_liff_list():
             "attendance_option": row.get("attendance_option"),
             "day1_group": row.get("day1_group"),
             "day2_group": row.get("day2_group"),
+            "leader_name": row.get("leader_name"),
             "proxy_by_name": row.get("proxy_by_name"),
             "relay_items": parse_relay_items(row.get("relay_items")),
         })
@@ -2385,6 +2483,7 @@ def api_liff_admin_signup_update():
     dharma_role = None
     day1_group = None
     day2_group = None
+    leader_name = None
     relay_items = []
 
     if event_type == "dharma":
@@ -2392,8 +2491,11 @@ def api_liff_admin_signup_update():
         valid_groups = {"服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"}
         if dharma_role == "student":
             attendance_option = str(data.get("attendance_option", "")).strip()
+            leader_name = str(data.get("leader_name", "")).strip() or None
             if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
                 return jsonify({"error": "請選擇正確的班員參班方式"}), 400
+            if not leader_name:
+                return jsonify({"error": "班員請填寫帶班人員"}), 400
         elif dharma_role == "staff":
             day1_group = str(data.get("day1_group", "")).strip() or None
             day2_group = str(data.get("day2_group", "")).strip() or None
@@ -2428,7 +2530,8 @@ def api_liff_admin_signup_update():
                dharma_role=%s,
                day1_group=%s,
                day2_group=%s,
-               relay_items=%s
+               relay_items=%s,
+               leader_name=%s
            WHERE id=%s AND event_id=%s""",
         (
             person_name,
@@ -2437,6 +2540,7 @@ def api_liff_admin_signup_update():
             day1_group,
             day2_group,
             json.dumps(relay_items, ensure_ascii=False),
+            leader_name,
             signup_id,
             event_id,
         ),
@@ -2532,7 +2636,7 @@ def _final_list_text(group_id, ev):
     conn = db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute("""
-        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group, proxy_by_name, relay_items
+        SELECT person_name, attendance_option, dharma_role, day1_group, day2_group, proxy_by_name, relay_items, leader_name
         FROM line_signups
         WHERE event_id=%s
         ORDER BY id
@@ -2558,10 +2662,13 @@ def _final_list_text(group_id, ev):
         if students:
             lines.append("【班員】")
             for opt in ["上兩天", "第一天", "補第二天", "加開第一天"]:
-                names = [_signup_display_name(r) for r in students if r.get("attendance_option") == opt]
-                if names:
-                    lines.append(f"{opt}（{len(names)}）")
-                    lines.extend(names)
+                selected = [r for r in students if r.get("attendance_option") == opt]
+                if selected:
+                    lines.append(f"{opt}（{len(selected)}）")
+                    for r in selected:
+                        leader = f" → {r.get('leader_name')}" if r.get("leader_name") else ""
+                        proxy = f"（{r.get('proxy_by_name')} 代報）" if r.get("proxy_by_name") else ""
+                        lines.append(f"{r.get('person_name') or ''}{leader}{proxy}")
             lines.append("")
 
         groups = ["服務", "文書", "接待", "總務", "辦道", "壇務", "炊事"]

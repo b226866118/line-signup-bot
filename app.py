@@ -876,8 +876,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </select>
 </div>
 <div id="dharmaStaffFields" style="display:none">
-<label>第一天組別（不參加可留白）</label><select id="dharmaDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
-<label>第二天組別（不參加可留白）</label><select id="dharmaDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第一天工作（不參加可留白）</label><select id="dharmaDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第二天工作（不參加可留白）</label><select id="dharmaDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
 <div style="font-size:12px;color:#888;margin:-4px 0 12px">至少一天要選擇組別。</div>
 </div>
 <button class="primary" style="width:100%" onclick="submitDharma(this)">送出報名</button>
@@ -913,13 +913,11 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
       <option value="補第二天">補第二天</option>
       <option value="加開第一天">加開第一天</option>
     </select>
-    <label>帶班人員 *</label>
-    <input id="unifiedSelfLeader" placeholder="請輸入帶班人員姓名">
   </div>
   <div id="unifiedStaffFields" style="display:none">
-    <label>第一天組別（不參加可留白）</label>
+    <label>第一天工作（不參加可留白）</label>
     <select id="unifiedDay1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
-    <label>第二天組別（不參加可留白）</label>
+    <label>第二天工作（不參加可留白）</label>
     <select id="unifiedDay2" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
   </div>
 </div>
@@ -937,6 +935,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
   <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addProxyStudentRow()">＋ 新增一位班員</button>
   <div style="font-size:12px;color:#888;margin:-2px 0 10px">每位班員都可以填自己的帶班人員。</div>
 </div>
+
+<div id="unifiedProxyStaffPairs" style="display:none">
+  <div id="unifiedProxyStaffRows"></div>
+  <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addProxyStaffRow()">＋ 新增一位辦事人員</button>
+  <div style="font-size:12px;color:#888;margin:-2px 0 10px">每位辦事人員可分別選第一天、第二天工作；不參加的那一天可留白。</div>
+</div>
+
 <textarea id="unifiedProxyNames" rows="4" placeholder="例如：王小明 李小華；可用空格、頓號、逗號或換行"></textarea>
 
 <div id="unifiedProxyRelay" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
@@ -975,8 +980,8 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <label>班員參班方式</label><select id="proxyAttendance" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="上兩天">上兩天</option><option value="第一天">第一天</option><option value="補第二天">補第二天</option><option value="加開第一天">加開第一天</option></select>
 </div>
 <div id="proxyStaffFields" style="display:none">
-<label>第一天組別（不參加可留白）</label><select id="proxyDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
-<label>第二天組別（不參加可留白）</label><select id="proxyDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第一天工作（不參加可留白）</label><select id="proxyDay1" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
+<label>第二天工作（不參加可留白）</label><select id="proxyDay2" class="dharma-group" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
 <div style="font-size:12px;color:#888;margin:-4px 0 12px">這一批代報的人會套用相同的日期與組別；至少一天要選擇組別。</div>
 </div>
 </div>
@@ -1017,9 +1022,9 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
     <input id="adminLeaderName" placeholder="帶班人員姓名">
   </div>
   <div id="adminStaffEditFields" style="display:none">
-    <label>第一天組別（不參加可留白）</label>
+    <label>第一天工作（不參加可留白）</label>
     <select id="adminDay1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
-    <label>第二天組別（不參加可留白）</label>
+    <label>第二天工作（不參加可留白）</label>
     <select id="adminDay2" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"></select>
   </div>
 </div>
@@ -1528,7 +1533,7 @@ async function submitDharma(btn){
 let signupChoiceEventId=0, signupChoiceTitleText='', signupChoiceType='general';
 
 function fillUnifiedGroups(){
-  const opts=DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g||'不參加')}</option>`).join('');
+  const opts='<option value="">留白</option>'+DHARMA_GROUPS.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join('');
   document.getElementById('unifiedDay1').innerHTML=opts;
   document.getElementById('unifiedDay2').innerHTML=opts;
 }
@@ -1553,12 +1558,41 @@ function getProxyStudentPairs(){
     }))
     .filter(x=>x.name||x.leader_name);
 }
+function staffGroupOptions(selected=''){
+  const values=['',...DHARMA_GROUPS];
+  return values.map(g=>`<option value="${esc(g)}"${g===selected?' selected':''}>${g?esc(g):'留白'}</option>`).join('');
+}
+function addProxyStaffRow(name='',day1='',day2=''){
+  const root=document.getElementById('unifiedProxyStaffRows');
+  const row=document.createElement('div');
+  row.className='proxy-staff-row';
+  row.style.cssText='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:8px;background:#fff';
+  row.innerHTML=`
+    <label style="margin-top:0">辦事人員姓名</label>
+    <input class="proxy-staff-name" value="${esc(name)}" placeholder="姓名">
+    <label>第一天工作（不參加可留白）</label>
+    <select class="proxy-staff-day1" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">${staffGroupOptions(day1)}</select>
+    <label>第二天工作（不參加可留白）</label>
+    <select class="proxy-staff-day2" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">${staffGroupOptions(day2)}</select>
+    <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除這位</button>`;
+  root.appendChild(row);
+}
+function getProxyStaffPairs(){
+  return Array.from(document.querySelectorAll('#unifiedProxyStaffRows .proxy-staff-row'))
+    .map(row=>({
+      name:row.querySelector('.proxy-staff-name').value.trim(),
+      day1_group:row.querySelector('.proxy-staff-day1').value.trim(),
+      day2_group:row.querySelector('.proxy-staff-day2').value.trim()
+    }))
+    .filter(x=>x.name||x.day1_group||x.day2_group);
+}
 function toggleUnifiedDharmaFields(){
   const staff=document.getElementById('unifiedDharmaRole').value==='staff';
   document.getElementById('unifiedStudentFields').style.display=staff?'none':'block';
   document.getElementById('unifiedStaffFields').style.display=staff?'block':'none';
   document.getElementById('unifiedProxyStudentPairs').style.display=staff?'none':'block';
-  document.getElementById('unifiedProxyNames').style.display=staff?'block':'none';
+  document.getElementById('unifiedProxyStaffPairs').style.display=staff?'block':'none';
+  document.getElementById('unifiedProxyNames').style.display='none';
 }
 function toggleUnifiedSelf(){
   const ev=events.find(x=>x.id===signupChoiceEventId);
@@ -1582,11 +1616,12 @@ function openSignupChoice(id,title,eventType){
     fillUnifiedGroups();
     document.getElementById('unifiedDharmaRole').value='student';
     document.getElementById('unifiedAttendance').value='上兩天';
-    document.getElementById('unifiedSelfLeader').value='';
     document.getElementById('unifiedDay1').selectedIndex=0;
     document.getElementById('unifiedDay2').selectedIndex=0;
     document.getElementById('unifiedProxyStudentRows').innerHTML='';
+    document.getElementById('unifiedProxyStaffRows').innerHTML='';
     addProxyStudentRow();
+    addProxyStaffRow();
     toggleUnifiedDharmaFields();
   }
 
@@ -1609,13 +1644,16 @@ async function submitUnifiedSignup(btn){
   const includeSelf=document.getElementById('unifiedSelf').checked;
   let proxyNames=document.getElementById('unifiedProxyNames').value.trim();
   let proxyStudentPairs=[];
+  let proxyStaffPairs=[];
 
-  if(signupChoiceType==='dharma' && selectValue('unifiedDharmaRole')==='student'){
-    proxyStudentPairs=getProxyStudentPairs();
+  if(signupChoiceType==='dharma'){
+    const role=selectValue('unifiedDharmaRole');
+    if(role==='student') proxyStudentPairs=getProxyStudentPairs();
+    if(role==='staff') proxyStaffPairs=getProxyStaffPairs();
     proxyNames='';
   }
 
-  if(!includeSelf && !proxyNames && !proxyStudentPairs.length){
+  if(!includeSelf && !proxyNames && !proxyStudentPairs.length && !proxyStaffPairs.length){
     showMsg('請勾選本人報名，或輸入要代報的人員',false);
     return;
   }
@@ -1627,19 +1665,19 @@ async function submitUnifiedSignup(btn){
     common.dharma_role=selectValue('unifiedDharmaRole');
     if(common.dharma_role==='student'){
       common.attendance_option=selectValue('unifiedAttendance');
-      if(includeSelf){
-        common.leader_name=document.getElementById('unifiedSelfLeader').value.trim();
-        if(!common.leader_name){showMsg('請填寫你的帶班人員',false);return;}
-      }
       for(const p of proxyStudentPairs){
         if(!p.name || !p.leader_name){showMsg('每位代報班員都要填寫班員姓名與帶班人員',false);return;}
       }
     }else{
       common.day1_group=selectValue('unifiedDay1');
       common.day2_group=selectValue('unifiedDay2');
-      if(!common.day1_group&&!common.day2_group){
-        showMsg('辦事人員至少要選擇一天的組別',false);
+      if(includeSelf && !common.day1_group&&!common.day2_group){
+        showMsg('本人若報名辦事人員，至少要選擇一天的工作',false);
         return;
+      }
+      for(const p of proxyStaffPairs){
+        if(!p.name){showMsg('請填寫辦事人員姓名',false);return;}
+        if(!p.day1_group&&!p.day2_group){showMsg(p.name+' 至少要選擇一天的工作',false);return;}
       }
     }
   }
@@ -1662,11 +1700,15 @@ async function submitUnifiedSignup(btn){
       }
     }
 
-    if(proxyNames || proxyStudentPairs.length){
+    if(proxyNames || proxyStudentPairs.length || proxyStaffPairs.length){
       const proxyBody={...common,names:proxyNames};
       if(signupChoiceType==='dharma' && common.dharma_role==='student'){
         proxyBody.student_pairs=proxyStudentPairs;
-        delete proxyBody.leader_name;
+      }
+      if(signupChoiceType==='dharma' && common.dharma_role==='staff'){
+        proxyBody.staff_pairs=proxyStaffPairs;
+        delete proxyBody.day1_group;
+        delete proxyBody.day2_group;
       }
       if(signupChoiceType==='general' && ev && ev.relay_enabled){
         proxyBody.relay_items=relayValues('unifiedProxyRelayItems');
@@ -2301,8 +2343,7 @@ def api_liff_signup():
         if dharma_role == "student":
             if attendance_option not in {"上兩天", "第一天", "補第二天", "加開第一天"}:
                 return jsonify({"error": "請選擇班員參班方式"}), 400
-            if not leader_name:
-                return jsonify({"error": "班員請填寫帶班人員"}), 400
+            leader_name = None
             day1_group = day2_group = None
         elif dharma_role == "staff":
             attendance_option = None
@@ -2376,20 +2417,47 @@ def api_liff_proxy():
                 else:
                     dup.append(name)
         elif dharma_role == "staff":
-            if day1_group and day1_group not in valid_groups:
-                return jsonify({"error": "第一天組別不正確"}), 400
-            if day2_group and day2_group not in valid_groups:
-                return jsonify({"error": "第二天組別不正確"}), 400
-            if not day1_group and not day2_group:
-                return jsonify({"error": "辦事人員至少要選擇一天的組別"}), 400
-            names = split_names(str(data.get("names", "")).strip())
-            if not names:
-                return jsonify({"error": "請輸入至少一個姓名"}), 400
-            for name in names:
+            pairs = data.get("staff_pairs", [])
+            if not isinstance(pairs, list):
+                pairs = []
+
+            cleaned = []
+            for p in pairs:
+                if not isinstance(p, dict):
+                    continue
+                name = str(p.get("name", "")).strip()
+                p_day1 = str(p.get("day1_group", "")).strip() or None
+                p_day2 = str(p.get("day2_group", "")).strip() or None
+                if not name:
+                    return jsonify({"error": "請填寫辦事人員姓名"}), 400
+                if p_day1 and p_day1 not in valid_groups:
+                    return jsonify({"error": f"{name} 的第一天工作不正確"}), 400
+                if p_day2 and p_day2 not in valid_groups:
+                    return jsonify({"error": f"{name} 的第二天工作不正確"}), 400
+                if not p_day1 and not p_day2:
+                    return jsonify({"error": f"{name} 至少要選擇一天的工作"}), 400
+                cleaned.append((name, p_day1, p_day2))
+
+            # Backward-compatible fallback for older page versions.
+            if not cleaned:
+                names = split_names(str(data.get("names", "")).strip())
+                if names:
+                    if day1_group and day1_group not in valid_groups:
+                        return jsonify({"error": "第一天組別不正確"}), 400
+                    if day2_group and day2_group not in valid_groups:
+                        return jsonify({"error": "第二天組別不正確"}), 400
+                    if not day1_group and not day2_group:
+                        return jsonify({"error": "辦事人員至少要選擇一天的工作"}), 400
+                    cleaned = [(name, day1_group, day2_group) for name in names]
+
+            if not cleaned:
+                return jsonify({"error": "請輸入至少一位辦事人員"}), 400
+
+            for name, p_day1, p_day2 in cleaned:
                 if add_signup(event_id, name, "proxy",
                               proxy_by_user_id=user_id, proxy_by_name=display_name,
                               attendance_option=None, dharma_role="staff",
-                              day1_group=day1_group, day2_group=day2_group,
+                              day1_group=p_day1, day2_group=p_day2,
                               relay_items=[], leader_name=None):
                     added += 1
                 else:

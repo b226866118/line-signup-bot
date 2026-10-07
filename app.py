@@ -893,10 +893,12 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <dialog id="signupChoiceDialog"><div class="modal">
 <h3 id="signupChoiceTitle">立即報名</h3>
 
+<div id="unifiedSelfBox">
 <label style="display:flex;align-items:center;gap:8px;font-size:16px;color:#222;margin:6px 0 12px">
   <input id="unifiedSelf" type="checkbox" checked style="width:auto;margin:0" onchange="toggleUnifiedSelf()">
   我本人也要報名
 </label>
+</div>
 
 <div id="unifiedDharmaOptions" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
   <div style="font-size:13px;color:#666;margin-bottom:6px">請先選擇報名身分；班員的參班方式會在每位班員資料中個別選擇。</div>
@@ -1593,6 +1595,16 @@ function toggleUnifiedDharmaFields(){
   document.getElementById('unifiedProxyStudentPairs').style.display=staff?'none':'block';
   document.getElementById('unifiedProxyStaffPairs').style.display=staff?'block':'none';
   document.getElementById('unifiedProxyNames').style.display='none';
+
+  const selfBox=document.getElementById('unifiedSelfBox');
+  const selfCheck=document.getElementById('unifiedSelf');
+  if(staff){
+    selfBox.style.display='block';
+    selfCheck.checked=true;
+  }else{
+    selfBox.style.display='none';
+    selfCheck.checked=false;
+  }
 }
 function toggleUnifiedSelf(){
   const ev=events.find(x=>x.id===signupChoiceEventId);

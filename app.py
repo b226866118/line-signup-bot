@@ -2307,6 +2307,17 @@ function relayItemsText(p,mode='text'){
   }
   return (p.relay_items||[]).map(esc).join('、');
 }
+function fixedPurchaseCompactText(p){
+  const items=p.relay_items||[];
+  const total=items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0);
+  const proxy=p.proxy_by_name?`（${esc(p.proxy_by_name)} 代報）`:'';
+  if(items.length===1){
+    const x=items[0];
+    return `${esc(p.name)} × ${moneyText(x.qty)}｜${moneyText(total)} 元${proxy}`;
+  }
+  const detail=items.map(x=>`${esc(x.item||'')}×${moneyText(x.qty)}`).join('、');
+  return `${esc(p.name)}｜${detail}｜${moneyText(total)} 元${proxy}`;
+}
 let relayEditMode='text';
 function openRelayEditById(eventId,signupId,label){
   const p=lastListPeople.find(x=>x.id===signupId);
@@ -2378,12 +2389,20 @@ async function showList(id,title){
     }else{
       document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
         const b=cancelBtn(id,p,title);
-        const itemTotal=(isPurchaseMode(d.relay_mode||'text')&&p.relay_items)?p.relay_items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0):0;
-        const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
-          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p,d.relay_mode||'text')}${isPurchaseMode(d.relay_mode||'text')?`<br><b>個人合計：${moneyText(itemTotal)} 元</b>`:''}</div>`:'';
         const edit=!adminMode&&d.relay_enabled&&p.can_cancel
           ? `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openRelayEditById(${id},${p.id},'${String(d.relay_label||'接龍項目').replace(/'/g,"\\'")}')">修改接龍</button>`:'';
         const admin=adminButtons(id,p,title);
+
+        if(d.relay_enabled && d.relay_mode==='fixed_purchase'){
+          const compact=fixedPurchaseCompactText(p);
+          return `<div style="margin:10px 0;display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <span>${i+1}. ${compact}</span><span>${admin}${edit}${b}</span>
+          </div>`;
+        }
+
+        const itemTotal=(isPurchaseMode(d.relay_mode||'text')&&p.relay_items)?p.relay_items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0):0;
+        const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
+          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p,d.relay_mode||'text')}${isPurchaseMode(d.relay_mode||'text')?`<br><b>個人合計：${moneyText(itemTotal)} 元</b>`:''}</div>`:'';
         return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${admin}${edit}${b}</span></div>${items}</div>`
       }).join('');
       if(d.relay_enabled&&isPurchaseMode(d.relay_mode||'text')){
@@ -3178,7 +3197,17 @@ def _final_list_text(group_id, ev):
         relay_label = ev.get("relay_label") or "接龍項目"
         for i, r in enumerate(rows, 1):
             items = parse_relay_items(r.get("relay_items"))
-            if ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") in {"fixed_purchase", "custom_purchase", "purchase"}:
+            if ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") == "fixed_purchase":
+                dict_items = [x for x in items if isinstance(x, dict)]
+                person_total = sum(float(x.get("subtotal", 0) or 0) for x in dict_items)
+                proxy = f"（{r.get('proxy_by_name')} 代報）" if r.get("proxy_by_name") else ""
+                if len(dict_items) == 1:
+                    x = dict_items[0]
+                    lines.append(f"{i}. {r.get('person_name') or ''} × {x.get('qty',0):g}｜{person_total:g} 元{proxy}")
+                else:
+                    detail = "、".join(f"{x.get('item','')}×{x.get('qty',0):g}" for x in dict_items)
+                    lines.append(f"{i}. {r.get('person_name') or ''}｜{detail}｜{person_total:g} 元{proxy}")
+            elif ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") in {"custom_purchase", "purchase"}:
                 lines.append(f"{i}. {_signup_display_name(r)}")
                 person_total = 0
                 for item in items:

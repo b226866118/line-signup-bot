@@ -336,7 +336,12 @@ def list_active_events(group_id: str):
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
-        SELECT e.*, COUNT(s.id)::int AS signup_count
+        SELECT e.*,
+               COUNT(s.id)::int AS signup_count,
+               COUNT(s.id) FILTER (
+                   WHERE s.dharma_role = 'student'
+                      OR (s.dharma_role IS NULL AND s.attendance_option IS NOT NULL)
+               )::int AS student_count
         FROM line_events e
         LEFT JOIN line_signups s ON s.event_id = e.id
         WHERE e.group_id = %s AND e.active = TRUE
@@ -534,7 +539,10 @@ def event_list_text(group_id: str):
 
     lines = ["📌 目前進行中的活動：", ""]
     for i, ev in enumerate(events, 1):
-        lines.append(f"{i}. {ev['title']}（{ev['signup_count']} 人）")
+        if (ev.get("event_type") or "general") == "dharma":
+            lines.append(f"{i}. {ev['title']}（班員 {ev.get('student_count', 0)} 人）")
+        else:
+            lines.append(f"{i}. {ev['title']}（{ev['signup_count']} 人）")
 
     lines += ["", "例如：報名1／代報1 王小明／名單1"]
     return "\n".join(lines)
@@ -1232,7 +1240,7 @@ try{
       ${deadlineBadge}
       ${img}
       ${shortDesc}
-      <div class="count">目前 ${ev.count} 人報名</div>
+      <div class="count">${(ev.event_type||'general')==='dharma' ? `目前班員 ${ev.count} 人` : `目前 ${ev.count} 人報名`}</div>
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
@@ -1944,7 +1952,7 @@ function dharmaListHtml(id,title,people){
   let html='';
   const students=people.filter(p=>p.dharma_role==='student'||(!p.dharma_role&&p.attendance_option));
   if(students.length){
-    html+='<h4 style="margin:8px 0">班員</h4>';
+    html+=`<h4 style="margin:8px 0">班員（共 ${students.length} 人）</h4>`;
     ['上兩天','第一天','補第二天','加開第一天'].forEach(opt=>{
       const a=students.filter(p=>p.attendance_option===opt);
       if(a.length) html+=`<div style="margin:8px 0"><b>${opt}（${a.length}）</b><br>`+a.map(p=>{const proxy=p.proxy_by_name?`（${esc(p.proxy_by_name)} 代報）`:'';const leader=p.leader_name?` <span style="color:#666">→ ${esc(p.leader_name)}</span>`:'';return `<div style="margin:6px 0">${esc(p.name)}${leader}${proxy}${adminButtons(id,p,title)}${cancelBtn(id,p,title)}</div>`}).join('')+'</div>';
@@ -2284,7 +2292,12 @@ def api_liff_events():
         result.append({
             "id": ev["id"],
             "title": ev["title"],
-            "count": ev.get("signup_count", len(list_signups(ev["id"]))),
+            "count": (
+                ev.get("student_count", 0)
+                if (ev.get("event_type") or "general") == "dharma"
+                else ev.get("signup_count", len(list_signups(ev["id"])))
+            ),
+            "student_count": ev.get("student_count", 0),
             "event_date": ev.get("event_date").isoformat() if ev.get("event_date") else None,
             "location": ev.get("location"),
             "description": ev.get("description"),
@@ -2745,7 +2758,7 @@ def _final_list_text(group_id, ev):
         staff = [r for r in rows if r.get("dharma_role") == "staff"]
 
         if students:
-            lines.append("【班員】")
+            lines.append(f"【班員｜共 {len(students)} 人】")
             for opt in ["上兩天", "第一天", "補第二天", "加開第一天"]:
                 selected = [r for r in students if r.get("attendance_option") == opt]
                 if selected:
@@ -2769,8 +2782,8 @@ def _final_list_text(group_id, ev):
                     lines.extend(names)
             lines.append("")
 
-        unique_names = {r["person_name"] for r in rows}
-        lines.append(f"總報名人數：{len(unique_names)} 人")
+        # 法會不再把班員與辦事人員混成一個「總報名人數」。
+        # 班員人數在上方單獨統計；辦事人員則依日期與各組分開顯示。
 
     lines += ["", "報名已截止，如需異動請聯絡活動管理者。"]
     return "\n".join(lines)

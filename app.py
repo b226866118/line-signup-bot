@@ -1551,7 +1551,7 @@ try{
 
       <div class="actions">
         <button class="light" onclick="showDetail(${ev.id})">查看詳情</button>
-        <button class="primary" ${ev.registration_open ? `onclick="openSignupChoice(${ev.id},'${safeTitle}','${ev.event_type||'general'}')"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'立即報名':'報名已截止'}</button>
+        <button class="primary" ${ev.registration_open ? `onclick="openSignupChoice(${ev.id},'${safeTitle}','${ev.event_type==='dharma'?'dharma':'general'}')"` : 'disabled style="background:#bbb;color:white"'}>${ev.registration_open?'立即報名':'報名已截止'}</button>
         <button class="light" onclick="showList(${ev.id},'${safeTitle}')">查看名單</button>
       </div>
 
@@ -1945,7 +1945,18 @@ function openSignupChoice(id,title,eventType){
   document.getElementById('unifiedGeneralProxyRows').innerHTML='';
 
   const isDharma=signupChoiceType==='dharma';
+
+  // 每次打開報名視窗都先把「一般活動 / 法會」介面狀態完整重設，
+  // 避免上一次開過法會後，狀態殘留到一般活動。
   document.getElementById('unifiedDharmaOptions').style.display=isDharma?'block':'none';
+  document.getElementById('unifiedProxyStudentPairs').style.display='none';
+  document.getElementById('unifiedProxyStaffPairs').style.display='none';
+  document.getElementById('unifiedGeneralProxyPeople').style.display='none';
+  document.getElementById('unifiedSelfRelay').style.display='none';
+  document.getElementById('unifiedProxyRelay').style.display='none';
+
+  const selfBox=document.getElementById('unifiedSelfBox');
+  const selfCheck=document.getElementById('unifiedSelf');
 
   if(isDharma){
     fillUnifiedGroups();
@@ -1957,6 +1968,11 @@ function openSignupChoice(id,title,eventType){
     addProxyStudentRow();
     addProxyStaffRow();
     toggleUnifiedDharmaFields();
+  }else{
+    // 一般活動一定恢復一般報名介面，不顯示班員/辦事人員選項。
+    selfBox.style.display='block';
+    selfCheck.checked=true;
+    document.getElementById('unifiedProxyNames').style.display='block';
   }
 
   const relayOn=!isDharma && ev && ev.relay_enabled;

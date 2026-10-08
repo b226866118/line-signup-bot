@@ -1076,7 +1076,7 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 </div>
 
 <div style="border-top:1px solid #eee;margin:14px 0"></div>
-<label style="font-size:15px;color:#222">順便幫其他人報名（可留空）</label>
+<label id="unifiedProxySectionLabel" style="font-size:15px;color:#222">順便幫其他人報名（可留空）</label>
 <div id="unifiedProxyStudentPairs" style="display:none">
   <div id="unifiedProxyStudentRows"></div>
   <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addProxyStudentRow()">＋ 新增一位班員</button>
@@ -1091,12 +1091,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 
 <textarea id="unifiedProxyNames" rows="4" placeholder="例如：王小明 李小華；可用空格、頓號、逗號或換行"></textarea>
 
-<div id="unifiedProxyRelay" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
-  <div id="unifiedProxyRelayLabel" style="font-weight:600;margin-bottom:6px">代報者的接龍項目</div>
-  <div id="unifiedProxyRelayItems"></div>
-  <button class="secondary" type="button" style="width:100%" onclick="addRelayInput('unifiedProxyRelayItems')">＋ 新增一項</button>
-  <div style="font-size:12px;color:#888;margin-top:6px">若一次代報多人，這批人會套用相同的接龍項目；若內容不同，可分次送出。</div>
+<div id="unifiedGeneralProxyPeople" style="display:none">
+  <div id="unifiedGeneralProxyRows"></div>
+  <button class="secondary" type="button" style="width:100%;margin-bottom:10px" onclick="addGeneralProxyPerson()">＋ 新增一位</button>
+  <div style="font-size:12px;color:#888;margin-top:2px">每一位都可以有自己的接龍內容；同一人也可以新增多個項目。</div>
 </div>
+
+<div id="unifiedProxyRelay" style="display:none"></div>
 
 <button class="primary" style="width:100%" onclick="submitUnifiedSignup(this)">送出報名</button>
 <button class="light" style="width:100%;margin-top:8px" onclick="signupChoiceDialog.close()">取消</button>
@@ -1385,6 +1386,53 @@ function fixedPurchaseValues(containerId){
     unit_price:Number(row.dataset.price||0),
     qty:Number(row.querySelector('.fixed-purchase-qty').value||0)
   })).filter(x=>x.qty>0);
+}
+function addGeneralProxyPerson(name='',items=[]){
+  const ev=events.find(x=>x.id===signupChoiceEventId);
+  const mode=(ev&&ev.relay_mode)||'text';
+  const catalog=(ev&&ev.purchase_catalog)||[];
+  const root=document.getElementById('unifiedGeneralProxyRows');
+  const card=document.createElement('div');
+  card.className='general-proxy-person';
+  card.style.cssText='padding:12px;border:1px solid #ddd;border-radius:12px;margin-bottom:10px;background:#fff';
+
+  const personId='gp_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  card.dataset.personId=personId;
+
+  const label = mode==='fixed_purchase' ? '購買數量'
+    : (isPurchaseMode(mode) ? '購買項目' : ((ev&&ev.relay_label)||'接龍項目'));
+
+  card.innerHTML=`
+    <label style="margin-top:0">姓名</label>
+    <input class="general-proxy-name" value="${esc(name)}" placeholder="請輸入姓名">
+    <div style="font-weight:600;margin:4px 0 8px">${esc(label)}</div>
+    <div class="general-proxy-items"></div>
+    <button type="button" class="secondary general-proxy-add-item" style="width:100%;margin-bottom:8px">＋ 新增一項</button>
+    <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除這位</button>`;
+
+  root.appendChild(card);
+  const itemRoot=card.querySelector('.general-proxy-items');
+  itemRoot.id=personId+'_items';
+  const addBtn=card.querySelector('.general-proxy-add-item');
+
+  if(mode==='fixed_purchase'){
+    addBtn.style.display='none';
+    addFixedPurchaseInputs(itemRoot.id,catalog,Array.isArray(items)?items:[]);
+  }else{
+    addBtn.style.display='block';
+    addBtn.onclick=()=>addRelayInputByMode(itemRoot.id,mode);
+    const initial=(Array.isArray(items)&&items.length)?items:[isPurchaseMode(mode)?{}:''];
+    initial.forEach(x=>addRelayInputByMode(itemRoot.id,mode,x));
+  }
+}
+
+function getGeneralProxyPeople(){
+  const ev=events.find(x=>x.id===signupChoiceEventId);
+  const mode=(ev&&ev.relay_mode)||'text';
+  return Array.from(document.querySelectorAll('#unifiedGeneralProxyRows .general-proxy-person')).map(card=>({
+    name:card.querySelector('.general-proxy-name').value.trim(),
+    relay_items:relayValuesByMode(card.querySelector('.general-proxy-items').id,mode)
+  })).filter(x=>x.name || (x.relay_items&&x.relay_items.length));
 }
 function addPurchaseInput(containerId,value={}){
   const root=document.getElementById(containerId);
@@ -1894,6 +1942,7 @@ function openSignupChoice(id,title,eventType){
   document.getElementById('signupChoiceTitle').textContent='立即報名｜'+title;
   document.getElementById('unifiedSelf').checked=true;
   document.getElementById('unifiedProxyNames').value='';
+  document.getElementById('unifiedGeneralProxyRows').innerHTML='';
 
   const isDharma=signupChoiceType==='dharma';
   document.getElementById('unifiedDharmaOptions').style.display=isDharma?'block':'none';
@@ -1911,33 +1960,28 @@ function openSignupChoice(id,title,eventType){
   }
 
   const relayOn=!isDharma && ev && ev.relay_enabled;
+  document.getElementById('unifiedProxySectionLabel').textContent=relayOn?'幫其他人報名（可新增多人）':'順便幫其他人報名（可留空）';
   document.getElementById('unifiedSelfRelay').style.display=relayOn?'block':'none';
-  document.getElementById('unifiedProxyRelay').style.display=relayOn?'block':'none';
+  document.getElementById('unifiedProxyRelay').style.display='none';
+  document.getElementById('unifiedGeneralProxyPeople').style.display=relayOn?'block':'none';
+  document.getElementById('unifiedProxyNames').style.display=(!isDharma && !relayOn)?'block':'none';
   const relayMode=(ev&&ev.relay_mode)||'text';
   const fixed=relayMode==='fixed_purchase';
   const purchase=isPurchaseMode(relayMode);
   document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+(fixed?'（請填數量）':(purchase?'（品項／單價／數量）':'（可填多項）'));
-  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+(fixed?'（請填數量）':(purchase?'（品項／單價／數量）':'（可填多項）'));
   document.getElementById('unifiedSelfRelayItems').innerHTML='';
-  document.getElementById('unifiedProxyRelayItems').innerHTML='';
   const selfAddBtn=document.querySelector('#unifiedSelfRelay button');
-  const proxyAddBtn=document.querySelector('#unifiedProxyRelay button');
   if(selfAddBtn){
     selfAddBtn.style.display=fixed?'none':'block';
     selfAddBtn.onclick=()=>addRelayInputByMode('unifiedSelfRelayItems',relayMode);
   }
-  if(proxyAddBtn){
-    proxyAddBtn.style.display=fixed?'none':'block';
-    proxyAddBtn.onclick=()=>addRelayInputByMode('unifiedProxyRelayItems',relayMode);
-  }
   if(relayOn){
     if(fixed){
       addFixedPurchaseInputs('unifiedSelfRelayItems',ev.purchase_catalog||[],[]);
-      addFixedPurchaseInputs('unifiedProxyRelayItems',ev.purchase_catalog||[],[]);
     }else{
       addRelayInputByMode('unifiedSelfRelayItems',relayMode);
-      addRelayInputByMode('unifiedProxyRelayItems',relayMode);
     }
+    addGeneralProxyPerson();
   }
 
   signupChoiceDialog.showModal();
@@ -1952,6 +1996,13 @@ async function submitUnifiedSignup(btn){
   let proxyNames=document.getElementById('unifiedProxyNames').value.trim();
   let proxyStudentPairs=[];
   let proxyStaffPairs=[];
+  let generalProxyPeople=[];
+
+  const currentEv=events.find(x=>x.id===signupChoiceEventId);
+  if(signupChoiceType==='general' && currentEv && currentEv.relay_enabled){
+    generalProxyPeople=getGeneralProxyPeople();
+    proxyNames='';
+  }
 
   if(signupChoiceType==='dharma'){
     const role=selectValue('unifiedDharmaRole');
@@ -1960,9 +2011,16 @@ async function submitUnifiedSignup(btn){
     proxyNames='';
   }
 
-  if(!includeSelf && !proxyNames && !proxyStudentPairs.length && !proxyStaffPairs.length){
-    showMsg('請勾選本人報名，或輸入要代報的人員',false);
+  if(!includeSelf && !proxyNames && !proxyStudentPairs.length && !proxyStaffPairs.length && !generalProxyPeople.length){
+    showMsg('請勾選本人報名，或新增至少一位要代報的人員',false);
     return;
+  }
+
+  for(const p of generalProxyPeople){
+    if(!p.name){
+      showMsg('每一位代報人員都要填寫姓名',false);
+      return;
+    }
   }
 
   const ev=events.find(x=>x.id===signupChoiceEventId);
@@ -2009,7 +2067,19 @@ async function submitUnifiedSignup(btn){
       }
     }
 
-    if(proxyNames || proxyStudentPairs.length || proxyStaffPairs.length){
+    if(signupChoiceType==='general' && ev && ev.relay_enabled && generalProxyPeople.length){
+      for(const p of generalProxyPeople){
+        const proxyBody={...common,names:p.name,relay_items:p.relay_items};
+        try{
+          const d=await api('/api/liff/proxy',{
+            method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(proxyBody)
+          });
+          msgs.push(p.name+'：'+d.message);
+        }catch(e){
+          errs.push(p.name+'：'+e.message);
+        }
+      }
+    }else if(proxyNames || proxyStudentPairs.length || proxyStaffPairs.length){
       const proxyBody={...common,names:proxyNames};
       if(signupChoiceType==='dharma' && common.dharma_role==='student'){
         proxyBody.student_pairs=proxyStudentPairs;
@@ -2018,9 +2088,6 @@ async function submitUnifiedSignup(btn){
         proxyBody.staff_pairs=proxyStaffPairs;
         delete proxyBody.day1_group;
         delete proxyBody.day2_group;
-      }
-      if(signupChoiceType==='general' && ev && ev.relay_enabled){
-        proxyBody.relay_items=relayValuesByMode('unifiedProxyRelayItems',ev.relay_mode||'text');
       }
       try{
         const d=await api('/api/liff/proxy',{

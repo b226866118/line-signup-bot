@@ -70,6 +70,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS deadline_list_published_at TIMESTAMP NULL")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_enabled BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_label TEXT")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_mode TEXT NOT NULL DEFAULT 'text'")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -257,6 +258,7 @@ def create_event(
     event_type="general",
     relay_enabled=False,
     relay_label=None,
+    relay_mode="text",
 ):
     conn = db()
     cur = conn.cursor()
@@ -265,9 +267,9 @@ def create_event(
         INSERT INTO line_events(
             group_id, title, active, created_at,
             event_date, location, description, dm_image_url, registration_deadline, event_type,
-            relay_enabled, relay_label
+            relay_enabled, relay_label, relay_mode
         )
-        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -282,6 +284,7 @@ def create_event(
             event_type or "general",
             bool(relay_enabled) if (event_type or "general") == "general" else False,
             (relay_label or "接龍項目").strip() if bool(relay_enabled) and (event_type or "general") == "general" else None,
+            (relay_mode if relay_mode in {"text","purchase"} else "text") if bool(relay_enabled) and (event_type or "general") == "general" else "text",
         ),
     )
     event_id = cur.fetchone()[0]
@@ -430,14 +433,34 @@ def add_signup(event_id, person_name, signup_type, line_user_id=None,
 def parse_relay_items(value):
     if not value:
         return []
-    if isinstance(value, list):
-        return [str(x).strip() for x in value if str(x).strip()]
-    try:
-        data = json.loads(value)
-        if isinstance(data, list):
-            return [str(x).strip() for x in data if str(x).strip()]
-    except Exception:
-        pass
+    data = value
+    if not isinstance(value, list):
+        try:
+            data = json.loads(value)
+        except Exception:
+            data = None
+    if isinstance(data, list):
+        result = []
+        for item in data:
+            if isinstance(item, dict):
+                name = str(item.get("item", "")).strip()
+                try:
+                    unit_price = float(item.get("unit_price", 0) or 0)
+                    qty = float(item.get("qty", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if name and unit_price >= 0 and qty > 0:
+                    result.append({
+                        "item": name,
+                        "unit_price": unit_price,
+                        "qty": qty,
+                        "subtotal": round(unit_price * qty, 2),
+                    })
+            else:
+                s = str(item).strip()
+                if s:
+                    result.append(s)
+        return result
     return [x.strip() for x in re.split(r"[、,，\n]+", str(value)) if x.strip()]
 
 
@@ -450,6 +473,34 @@ def clean_relay_items(value):
         if s and s not in result:
             result.append(s)
     return result[:20]
+
+
+def clean_purchase_items(value):
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("item", "")).strip()
+        try:
+            unit_price = float(item.get("unit_price", 0) or 0)
+            qty = float(item.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if not name or unit_price < 0 or qty <= 0:
+            continue
+        result.append({
+            "item": name,
+            "unit_price": round(unit_price, 2),
+            "qty": round(qty, 2),
+            "subtotal": round(unit_price * qty, 2),
+        })
+    return result
+
+
+def clean_relay_for_event(ev, value):
+    return clean_purchase_items(value) if (ev.get("relay_mode") or "text") == "purchase" else clean_relay_items(value)
 
 
 def remove_signup(event_id: int, person_name: str):
@@ -839,7 +890,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <select id="editType" onchange="toggleEditRelay()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
 <div id="editRelayBox" style="display:none;padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
 <label style="margin:0"><input id="editRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleEditRelayLabel()">開啟接龍項目</label>
-<div id="editRelayLabelBox" style="display:none"><label>接龍欄位名稱</label><input id="editRelayLabel" placeholder="例如：菜色、攜帶物品、工作項目"></div>
+<div id="editRelayLabelBox" style="display:none">
+<label>接龍類型</label>
+<select id="editRelayMode" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="text">一般接龍</option><option value="purchase">採購／團購</option>
+</select>
+<label>接龍欄位名稱</label><input id="editRelayLabel" placeholder="例如：菜色、攜帶物品、商品">
+</div>
 </div>
 <label>活動日期</label><input id="editDate" type="date">
 <label>地點</label><input id="editLocation">
@@ -860,7 +917,13 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <select id="newType" onchange="toggleNewRelay()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white"><option value="general">一般活動</option><option value="dharma">法會</option></select>
 <div id="newRelayBox" style="padding:10px 12px;background:#f7f7f7;border-radius:10px;margin-bottom:12px">
 <label style="margin:0"><input id="newRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleNewRelayLabel()">開啟接龍項目</label>
-<div id="newRelayLabelBox" style="display:none"><label>接龍欄位名稱</label><input id="newRelayLabel" value="菜色" placeholder="例如：菜色、攜帶物品、工作項目"></div>
+<div id="newRelayLabelBox" style="display:none">
+<label>接龍類型</label>
+<select id="newRelayMode" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="text">一般接龍</option><option value="purchase">採購／團購</option>
+</select>
+<label>接龍欄位名稱</label><input id="newRelayLabel" value="菜色" placeholder="例如：菜色、攜帶物品、商品">
+</div>
 </div>
 <label>活動日期</label><input id="newDate" type="date">
 <label>地點</label><input id="newLocation" placeholder="例如：崇德大樓">
@@ -1156,7 +1219,7 @@ async function toggleGroupAccess(){
 
 let events=[];
 let lastListPeople=[];
-let adminEditEventId=0, adminEditSignupId=0, adminEditEventType='general', adminEditRelayEnabled=false, adminEditRelayLabel='接龍項目';
+let adminEditEventId=0, adminEditSignupId=0, adminEditEventType='general', adminEditRelayEnabled=false, adminEditRelayLabel='接龍項目', adminEditRelayMode='text';
 let relaySelfEventId=0, relayEditEventId=0, relayEditSignupId=0;
 
 function addRelayInput(containerId,value=''){
@@ -1173,6 +1236,48 @@ function addRelayInput(containerId,value=''){
 }
 function relayValues(containerId){
   return Array.from(document.querySelectorAll('#'+containerId+' .relay-item-input')).map(x=>x.value.trim()).filter(Boolean);
+}
+function moneyText(v){
+  const n=Number(v||0);
+  return Number.isInteger(n)?String(n):n.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
+}
+function addPurchaseInput(containerId,value={}){
+  const root=document.getElementById(containerId);
+  const row=document.createElement('div');
+  row.className='purchase-item-row';
+  row.style.cssText='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:8px;background:#fff';
+  const item=(value&&typeof value==='object')?value:{};
+  row.innerHTML=`
+    <label style="margin-top:0">品項</label>
+    <input class="purchase-name" value="${esc(item.item||'')}" placeholder="例如：茶葉">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div><label>單價</label><input class="purchase-price" type="number" min="0" step="1" value="${item.unit_price??''}" placeholder="0"></div>
+      <div><label>數量</label><input class="purchase-qty" type="number" min="0.01" step="1" value="${item.qty??1}"></div>
+    </div>
+    <div class="purchase-subtotal" style="font-size:14px;color:#555;margin:2px 0 8px">小計：0 元</div>
+    <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除這項</button>`;
+  const recalc=()=>{
+    const p=Number(row.querySelector('.purchase-price').value||0);
+    const q=Number(row.querySelector('.purchase-qty').value||0);
+    row.querySelector('.purchase-subtotal').textContent='小計：'+moneyText(p*q)+' 元';
+  };
+  row.querySelector('.purchase-price').addEventListener('input',recalc);
+  row.querySelector('.purchase-qty').addEventListener('input',recalc);
+  root.appendChild(row); recalc();
+}
+function purchaseValues(containerId){
+  return Array.from(document.querySelectorAll('#'+containerId+' .purchase-item-row')).map(row=>({
+    item:row.querySelector('.purchase-name').value.trim(),
+    unit_price:Number(row.querySelector('.purchase-price').value||0),
+    qty:Number(row.querySelector('.purchase-qty').value||0)
+  })).filter(x=>x.item&&x.unit_price>=0&&x.qty>0);
+}
+function addRelayInputByMode(containerId,mode,value=''){
+  if(mode==='purchase')addPurchaseInput(containerId,value&&typeof value==='object'?value:{});
+  else addRelayInput(containerId,typeof value==='string'?value:'');
+}
+function relayValuesByMode(containerId,mode){
+  return mode==='purchase'?purchaseValues(containerId):relayValues(containerId);
 }
 function toggleNewRelay(){
   const general=document.getElementById('newType').value==='general';
@@ -1218,7 +1323,7 @@ try{
     const safeTitle=String(ev.title).replace(/'/g,"\'");
     const typeBadge=ev.event_type==='dharma'
       ? '<div class="meta">法會｜班員／辦事人員分開報名</div>'
-      : (ev.relay_enabled ? `<div class="meta">接龍項目：${esc(ev.relay_label||'接龍項目')}</div>` : '');
+      : (ev.relay_enabled ? `<div class="meta">${ev.relay_mode==='purchase'?'採購／團購':'接龍項目'}：${esc(ev.relay_label||'接龍項目')}</div>` : '');
     const deadlineBadge=!ev.registration_open
       ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#fdecec;color:#a22;font-weight:600">報名已截止</div>'
       : (ev.registration_force_open ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#e8f8ee;color:#17723b">管理者已重新開放報名</div>' : '');
@@ -1307,6 +1412,7 @@ try{
   fd.append('title',title);
   fd.append('event_type',document.getElementById('newType').value);
   fd.append('relay_enabled',document.getElementById('newRelayEnabled').checked?'1':'0');
+  fd.append('relay_mode',document.getElementById('newRelayMode').value);
   fd.append('relay_label',document.getElementById('newRelayLabel').value.trim());
   fd.append('event_date',document.getElementById('newDate').value);
   fd.append('location',document.getElementById('newLocation').value.trim());
@@ -1394,6 +1500,7 @@ async function openEdit(id){
     document.getElementById('editTitle').value=ev.title||'';
     document.getElementById('editType').value=ev.event_type||'general';
     document.getElementById('editRelayEnabled').checked=!!ev.relay_enabled;
+    document.getElementById('editRelayMode').value=ev.relay_mode||'text';
     document.getElementById('editRelayLabel').value=ev.relay_label||'菜色';
     toggleEditRelay();
     document.getElementById('editDate').value=ev.event_date||'';
@@ -1437,6 +1544,7 @@ async function submitEdit(btn){
     fd.append('title',title);
     fd.append('event_type',document.getElementById('editType').value);
     fd.append('relay_enabled',document.getElementById('editRelayEnabled').checked?'1':'0');
+    fd.append('relay_mode',document.getElementById('editRelayMode').value);
     fd.append('relay_label',document.getElementById('editRelayLabel').value.trim());
     fd.append('event_date',document.getElementById('editDate').value);
     fd.append('location',document.getElementById('editLocation').value.trim());
@@ -1647,13 +1755,18 @@ function openSignupChoice(id,title,eventType){
   const relayOn=!isDharma && ev && ev.relay_enabled;
   document.getElementById('unifiedSelfRelay').style.display=relayOn?'block':'none';
   document.getElementById('unifiedProxyRelay').style.display=relayOn?'block':'none';
-  document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
-  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+'（可填多項）';
+  const relayMode=(ev&&ev.relay_mode)||'text';
+  document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+(relayMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
+  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+(relayMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
   document.getElementById('unifiedSelfRelayItems').innerHTML='';
   document.getElementById('unifiedProxyRelayItems').innerHTML='';
+  const selfAddBtn=document.querySelector('#unifiedSelfRelay button');
+  const proxyAddBtn=document.querySelector('#unifiedProxyRelay button');
+  if(selfAddBtn)selfAddBtn.onclick=()=>addRelayInputByMode('unifiedSelfRelayItems',relayMode);
+  if(proxyAddBtn)proxyAddBtn.onclick=()=>addRelayInputByMode('unifiedProxyRelayItems',relayMode);
   if(relayOn){
-    addRelayInput('unifiedSelfRelayItems');
-    addRelayInput('unifiedProxyRelayItems');
+    addRelayInputByMode('unifiedSelfRelayItems',relayMode);
+    addRelayInputByMode('unifiedProxyRelayItems',relayMode);
   }
 
   signupChoiceDialog.showModal();
@@ -1713,7 +1826,7 @@ async function submitUnifiedSignup(btn){
     if(includeSelf){
       const selfBody={...common};
       if(signupChoiceType==='general' && ev && ev.relay_enabled){
-        selfBody.relay_items=relayValues('unifiedSelfRelayItems');
+        selfBody.relay_items=relayValuesByMode('unifiedSelfRelayItems',ev.relay_mode||'text');
       }
       try{
         const d=await api('/api/liff/signup',{
@@ -1736,7 +1849,7 @@ async function submitUnifiedSignup(btn){
         delete proxyBody.day2_group;
       }
       if(signupChoiceType==='general' && ev && ev.relay_enabled){
-        proxyBody.relay_items=relayValues('unifiedProxyRelayItems');
+        proxyBody.relay_items=relayValuesByMode('unifiedProxyRelayItems',ev.relay_mode||'text');
       }
       try{
         const d=await api('/api/liff/proxy',{
@@ -1842,6 +1955,7 @@ function openAdminSignupEdit(eventId,signupId){
   adminEditEventType=ev.event_type||'general';
   adminEditRelayEnabled=!!ev.relay_enabled;
   adminEditRelayLabel=ev.relay_label||'接龍項目';
+  adminEditRelayMode=ev.relay_mode||'text';
 
   document.getElementById('adminSignupEditTitle').textContent='編輯報名｜'+p.name;
   document.getElementById('adminSignupName').value=p.name||'';
@@ -1854,7 +1968,9 @@ function openAdminSignupEdit(eventId,signupId){
   document.getElementById('adminRelayEditLabel').textContent=adminEditRelayLabel+'（可填多項）';
   document.getElementById('adminRelayEditItems').innerHTML='';
   if(!isDharma&&adminEditRelayEnabled){
-    (p.relay_items&&p.relay_items.length?p.relay_items:['']).forEach(x=>addRelayInput('adminRelayEditItems',x));
+    const addBtn=document.querySelector('#adminRelayEditBox .secondary');
+    if(addBtn)addBtn.onclick=()=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode);
+    (p.relay_items&&p.relay_items.length?p.relay_items:[adminEditRelayMode==='purchase'?{}:'']).forEach(x=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode,x));
   }
 
   if(isDharma){
@@ -1895,7 +2011,7 @@ async function submitAdminSignupEdit(btn){
       }
     }
   }else if(adminEditRelayEnabled){
-    body.relay_items=relayValues('adminRelayEditItems');
+    body.relay_items=relayValuesByMode('adminRelayEditItems',adminEditRelayMode);
   }
 
   setBusy(btn,true,'儲存中…');
@@ -1924,15 +2040,25 @@ function personText(p){
   const proxy=p.proxy_by_name ? `（${esc(p.proxy_by_name)} 代報）` : '';
   return `${esc(p.name)}${proxy}`;
 }
-function relayItemsText(p){ return (p.relay_items||[]).map(esc).join('、'); }
+function relayItemsText(p,mode='text'){
+  if(mode==='purchase'){
+    return (p.relay_items||[]).map(x=>`${esc(x.item||'')}｜${moneyText(x.unit_price)} × ${moneyText(x.qty)} = ${moneyText(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0)))} 元`).join('<br>');
+  }
+  return (p.relay_items||[]).map(esc).join('、');
+}
+let relayEditMode='text';
 function openRelayEditById(eventId,signupId,label){
   const p=lastListPeople.find(x=>x.id===signupId);
+  const ev=events.find(x=>x.id===eventId);
   if(!p)return;
   relayEditEventId=eventId; relayEditSignupId=signupId;
+  relayEditMode=(ev&&ev.relay_mode)||'text';
   document.getElementById('relayEditTitle').textContent='修改接龍｜'+p.name;
-  document.getElementById('relayEditLabel').textContent=(label||'接龍項目')+'（可填多項）';
+  document.getElementById('relayEditLabel').textContent=(label||'接龍項目')+(relayEditMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
   document.getElementById('relayEditItems').innerHTML='';
-  (p.relay_items&&p.relay_items.length?p.relay_items:['']).forEach(x=>addRelayInput('relayEditItems',x));
+  const btn=document.querySelector('#relayEditDialog .secondary');
+  if(btn)btn.onclick=()=>addRelayInputByMode('relayEditItems',relayEditMode);
+  (p.relay_items&&p.relay_items.length?p.relay_items:[relayEditMode==='purchase'?{}:'']).forEach(x=>addRelayInputByMode('relayEditItems',relayEditMode,x));
   relayEditDialog.showModal();
 }
 async function submitRelayEdit(btn){
@@ -1940,7 +2066,7 @@ async function submitRelayEdit(btn){
   try{
     const d=await api('/api/liff/relay-items',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
       event_id:relayEditEventId,signup_id:relayEditSignupId,user_id:profile.userId,
-      relay_items:relayValues('relayEditItems')
+      relay_items:relayValuesByMode('relayEditItems',relayEditMode)
     })});
     relayEditDialog.close();showMsg(d.message);
     const ev=events.find(x=>x.id===relayEditEventId);
@@ -1983,13 +2109,18 @@ async function showList(id,title){
     }else{
       document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
         const b=cancelBtn(id,p,title);
+        const itemTotal=(d.relay_mode==='purchase'&&p.relay_items)?p.relay_items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0):0;
         const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
-          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p)}</div>`:'';
+          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p,d.relay_mode||'text')}${d.relay_mode==='purchase'?`<br><b>個人合計：${moneyText(itemTotal)} 元</b>`:''}</div>`:'';
         const edit=!adminMode&&d.relay_enabled&&p.can_cancel
           ? `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openRelayEditById(${id},${p.id},'${String(d.relay_label||'接龍項目').replace(/'/g,"\\'")}')">修改接龍</button>`:'';
         const admin=adminButtons(id,p,title);
         return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${admin}${edit}${b}</span></div>${items}</div>`
       }).join('');
+      if(d.relay_enabled&&d.relay_mode==='purchase'){
+        const grand=d.people.reduce((sum,p)=>sum+(p.relay_items||[]).reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0),0);
+        document.getElementById('listBody').innerHTML += `<div style="margin-top:14px;padding-top:10px;border-top:1px solid #ddd"><b>全部總金額：${moneyText(grand)} 元</b></div>`;
+      }
     }
     listDialog.showModal()
   }catch(e){showMsg(e.message,false)}
@@ -2056,6 +2187,9 @@ def api_liff_create_event():
     event_type = str(request.form.get("event_type", "general")).strip() or "general"
     relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
     relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
+    relay_mode = str(request.form.get("relay_mode", "text")).strip()
+    if relay_mode not in {"text", "purchase"}:
+        relay_mode = "text"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -2085,6 +2219,7 @@ def api_liff_create_event():
             event_type=event_type,
             relay_enabled=relay_enabled,
             relay_label=relay_label,
+            relay_mode=relay_mode,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -2105,6 +2240,9 @@ def api_liff_update_event():
     event_type = str(request.form.get("event_type", "general")).strip() or "general"
     relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
     relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
+    relay_mode = str(request.form.get("relay_mode", "text")).strip()
+    if relay_mode not in {"text", "purchase"}:
+        relay_mode = "text"
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -2141,6 +2279,7 @@ def api_liff_update_event():
                 event_type=%s,
                 relay_enabled=%s,
                 relay_label=%s,
+                relay_mode=%s,
                 registration_force_open=FALSE,
                 registration_manual_closed=FALSE
             WHERE id=%s AND group_id=%s
@@ -2155,6 +2294,7 @@ def api_liff_update_event():
                 event_type,
                 bool(relay_enabled) if event_type == 'general' else False,
                 relay_label if relay_enabled and event_type == 'general' else None,
+                relay_mode if relay_enabled and event_type == 'general' else 'text',
                 event_id,
                 group_id,
             ),
@@ -2312,6 +2452,7 @@ def api_liff_events():
             "reopened_after_close": bool(ev.get("reopened_after_close")),
             "relay_enabled": bool(ev.get("relay_enabled")),
             "relay_label": ev.get("relay_label") or "接龍項目",
+            "relay_mode": ev.get("relay_mode") or "text",
         })
 
     return jsonify({"events": result})
@@ -2344,6 +2485,7 @@ def api_liff_event_detail():
             "reopened_after_close": bool(ev.get("reopened_after_close")),
             "relay_enabled": bool(ev.get("relay_enabled")),
             "relay_label": ev.get("relay_label") or "接龍項目",
+            "relay_mode": ev.get("relay_mode") or "text",
         }
     })
 
@@ -2363,7 +2505,7 @@ def api_liff_signup():
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
     leader_name = str(data.get("leader_name", "")).strip() or None
-    relay_items = clean_relay_items(data.get("relay_items", []))
+    relay_items = clean_relay_for_event(ev, data.get("relay_items", []))
     if not user_id or not display_name:
         return jsonify({"error": "無法取得 LINE 使用者資料"}), 400
     if not registration_is_open(ev):
@@ -2414,7 +2556,7 @@ def api_liff_proxy():
     dharma_role = str(data.get("dharma_role", "")).strip() or None
     day1_group = str(data.get("day1_group", "")).strip() or None
     day2_group = str(data.get("day2_group", "")).strip() or None
-    relay_items = clean_relay_items(data.get("relay_items", []))
+    relay_items = clean_relay_for_event(ev, data.get("relay_items", []))
     event_type = ev.get("event_type") or "general"
     added, dup = 0, []
 
@@ -2551,7 +2693,7 @@ def api_liff_list():
             "relay_items": parse_relay_items(row.get("relay_items")),
         })
 
-    return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目"})
+    return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目", "relay_mode": ev.get("relay_mode") or "text"})
 
 
 @app.route("/api/liff/admin-signup/update", methods=["POST"])
@@ -2607,7 +2749,7 @@ def api_liff_admin_signup_update():
             return jsonify({"error": "請選擇班員或辦事人員"}), 400
     else:
         if ev.get("relay_enabled"):
-            relay_items = clean_relay_items(data.get("relay_items", []))
+            relay_items = clean_relay_for_event(ev, data.get("relay_items", []))
 
     conn = db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -2656,9 +2798,8 @@ def api_liff_update_relay_items():
     event_id = int(data.get("event_id", 0) or 0)
     signup_id = int(data.get("signup_id", 0) or 0)
     user_id = str(data.get("user_id", "")).strip()
-    items = clean_relay_items(data.get("relay_items", []))
-
     ev = get_event_by_id(group_id, event_id)
+    items = clean_relay_for_event(ev or {}, data.get("relay_items", []))
     if not ev or (ev.get("event_type") or "general") != "general" or not ev.get("relay_enabled"):
         return jsonify({"error": "這個活動沒有開啟接龍項目"}), 400
     if not registration_is_open(ev):
@@ -2751,8 +2892,27 @@ def _final_list_text(group_id, ev):
         relay_label = ev.get("relay_label") or "接龍項目"
         for i, r in enumerate(rows, 1):
             items = parse_relay_items(r.get("relay_items"))
-            suffix = f"｜{relay_label}：{'、'.join(items)}" if ev.get("relay_enabled") and items else ""
-            lines.append(f"{i}. {_signup_display_name(r)}{suffix}")
+            if ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") == "purchase":
+                lines.append(f"{i}. {_signup_display_name(r)}")
+                person_total = 0
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    subtotal = float(item.get("subtotal", 0) or 0)
+                    person_total += subtotal
+                    lines.append(f"　{item.get('item','')}｜{item.get('unit_price',0):g} × {item.get('qty',0):g} = {subtotal:g} 元")
+                lines.append(f"　個人合計：{person_total:g} 元")
+            else:
+                text_items = [str(x) for x in items if not isinstance(x, dict)]
+                suffix = f"｜{relay_label}：{'、'.join(text_items)}" if ev.get("relay_enabled") and text_items else ""
+                lines.append(f"{i}. {_signup_display_name(r)}{suffix}")
+        if ev.get("relay_enabled") and (ev.get("relay_mode") or "text") == "purchase":
+            grand_total = 0
+            for r in rows:
+                for item in parse_relay_items(r.get("relay_items")):
+                    if isinstance(item, dict):
+                        grand_total += float(item.get("subtotal", 0) or 0)
+            lines += ["", f"全部總金額：{grand_total:g} 元"]
     else:
         students = [r for r in rows if r.get("dharma_role") == "student" or (not r.get("dharma_role") and r.get("attendance_option"))]
         staff = [r for r in rows if r.get("dharma_role") == "staff"]

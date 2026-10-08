@@ -71,6 +71,7 @@ def init_db():
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_enabled BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_label TEXT")
     cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS relay_mode TEXT NOT NULL DEFAULT 'text'")
+    cur.execute("ALTER TABLE line_events ADD COLUMN IF NOT EXISTS purchase_catalog TEXT")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS line_signups (
@@ -259,6 +260,7 @@ def create_event(
     relay_enabled=False,
     relay_label=None,
     relay_mode="text",
+    purchase_catalog=None,
 ):
     conn = db()
     cur = conn.cursor()
@@ -267,9 +269,9 @@ def create_event(
         INSERT INTO line_events(
             group_id, title, active, created_at,
             event_date, location, description, dm_image_url, registration_deadline, event_type,
-            relay_enabled, relay_label, relay_mode
+            relay_enabled, relay_label, relay_mode, purchase_catalog
         )
-        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -284,7 +286,10 @@ def create_event(
             event_type or "general",
             bool(relay_enabled) if (event_type or "general") == "general" else False,
             (relay_label or "接龍項目").strip() if bool(relay_enabled) and (event_type or "general") == "general" else None,
-            (relay_mode if relay_mode in {"text","purchase"} else "text") if bool(relay_enabled) and (event_type or "general") == "general" else "text",
+            (relay_mode if relay_mode in {"text","fixed_purchase","custom_purchase","purchase"} else "text") if bool(relay_enabled) and (event_type or "general") == "general" else "text",
+            json.dumps(parse_purchase_catalog(purchase_catalog), ensure_ascii=False)
+            if bool(relay_enabled) and (event_type or "general") == "general" and relay_mode == "fixed_purchase"
+            else None,
         ),
     )
     event_id = cur.fetchone()[0]
@@ -499,8 +504,69 @@ def clean_purchase_items(value):
     return result
 
 
+def parse_purchase_catalog(value):
+    if not value:
+        return []
+    data = value
+    if not isinstance(value, list):
+        try:
+            data = json.loads(value)
+        except Exception:
+            data = []
+    if not isinstance(data, list):
+        return []
+    result, seen = [], set()
+    for row in data[:30]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("item", "")).strip()
+        try:
+            price = float(row.get("unit_price", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        key = name.casefold()
+        if not name or price < 0 or key in seen:
+            continue
+        seen.add(key)
+        result.append({"item": name, "unit_price": round(price, 2)})
+    return result
+
+
+def clean_fixed_purchase_items(ev, value):
+    catalog = parse_purchase_catalog(ev.get("purchase_catalog"))
+    allowed = {x["item"]: x["unit_price"] for x in catalog}
+    if not isinstance(value, list):
+        return []
+    result = []
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("item", "")).strip()
+        if name not in allowed:
+            continue
+        try:
+            qty = float(row.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        price = allowed[name]
+        result.append({
+            "item": name,
+            "unit_price": price,
+            "qty": round(qty, 2),
+            "subtotal": round(price * qty, 2),
+        })
+    return result
+
+
 def clean_relay_for_event(ev, value):
-    return clean_purchase_items(value) if (ev.get("relay_mode") or "text") == "purchase" else clean_relay_items(value)
+    mode = ev.get("relay_mode") or "text"
+    if mode == "fixed_purchase":
+        return clean_fixed_purchase_items(ev, value)
+    if mode in {"custom_purchase", "purchase"}:
+        return clean_purchase_items(value)
+    return clean_relay_items(value)
 
 
 def remove_signup(event_id: int, person_name: str):
@@ -892,9 +958,17 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <label style="margin:0"><input id="editRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleEditRelayLabel()">開啟接龍項目</label>
 <div id="editRelayLabelBox" style="display:none">
 <label>接龍類型</label>
-<select id="editRelayMode" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
-<option value="text">一般接龍</option><option value="purchase">採購／團購</option>
+<select id="editRelayMode" onchange="toggleEditPurchaseCatalog()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="text">一般接龍</option>
+<option value="fixed_purchase">固定商品（管理員先設定商品與單價）</option>
+<option value="custom_purchase">自由採購（使用者自己填商品與單價）</option>
 </select>
+<div id="editPurchaseCatalogBox" style="display:none;margin-top:8px">
+  <div style="font-weight:600;margin-bottom:6px">商品與單價</div>
+  <div id="editPurchaseCatalogRows"></div>
+  <button type="button" class="secondary" style="width:100%;margin-bottom:10px" onclick="addCatalogRow('editPurchaseCatalogRows')">＋ 新增商品</button>
+  <div style="font-size:12px;color:#888;margin-bottom:8px">使用者報名時只需要填數量。</div>
+</div>
 <label>接龍欄位名稱</label><input id="editRelayLabel" placeholder="例如：菜色、攜帶物品、商品">
 </div>
 </div>
@@ -919,9 +993,17 @@ dialog{width:min(92vw,520px);border:0;border-radius:16px;padding:0}.modal{paddin
 <label style="margin:0"><input id="newRelayEnabled" type="checkbox" style="width:auto;margin-right:7px" onchange="toggleNewRelayLabel()">開啟接龍項目</label>
 <div id="newRelayLabelBox" style="display:none">
 <label>接龍類型</label>
-<select id="newRelayMode" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
-<option value="text">一般接龍</option><option value="purchase">採購／團購</option>
+<select id="newRelayMode" onchange="toggleNewPurchaseCatalog()" style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccc;border-radius:10px;font-size:16px;margin:8px 0 12px;background:white">
+<option value="text">一般接龍</option>
+<option value="fixed_purchase">固定商品（管理員先設定商品與單價）</option>
+<option value="custom_purchase">自由採購（使用者自己填商品與單價）</option>
 </select>
+<div id="newPurchaseCatalogBox" style="display:none;margin-top:8px">
+  <div style="font-weight:600;margin-bottom:6px">商品與單價</div>
+  <div id="newPurchaseCatalogRows"></div>
+  <button type="button" class="secondary" style="width:100%;margin-bottom:10px" onclick="addCatalogRow('newPurchaseCatalogRows')">＋ 新增商品</button>
+  <div style="font-size:12px;color:#888;margin-bottom:8px">使用者報名時只需要填數量。</div>
+</div>
 <label>接龍欄位名稱</label><input id="newRelayLabel" value="菜色" placeholder="例如：菜色、攜帶物品、商品">
 </div>
 </div>
@@ -1241,6 +1323,69 @@ function moneyText(v){
   const n=Number(v||0);
   return Number.isInteger(n)?String(n):n.toFixed(2).replace(/0+$/,'').replace(/\.$/,'');
 }
+function addCatalogRow(containerId,value={}){
+  const root=document.getElementById(containerId);
+  const row=document.createElement('div');
+  row.className='catalog-row';
+  row.style.cssText='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:8px;background:#fff';
+  const v=(value&&typeof value==='object')?value:{};
+  row.innerHTML=`
+    <label style="margin-top:0">商品名稱</label>
+    <input class="catalog-name" value="${esc(v.item||'')}" placeholder="例如：茶葉">
+    <label>單價</label>
+    <input class="catalog-price" type="number" min="0" step="1" value="${v.unit_price??''}" placeholder="0">
+    <button type="button" class="light" style="width:100%;color:#a22" onclick="this.parentElement.remove()">刪除商品</button>`;
+  root.appendChild(row);
+}
+function catalogValues(containerId){
+  return Array.from(document.querySelectorAll('#'+containerId+' .catalog-row')).map(row=>({
+    item:row.querySelector('.catalog-name').value.trim(),
+    unit_price:Number(row.querySelector('.catalog-price').value||0)
+  })).filter(x=>x.item&&x.unit_price>=0);
+}
+function toggleNewPurchaseCatalog(){
+  const fixed=document.getElementById('newRelayMode').value==='fixed_purchase';
+  document.getElementById('newPurchaseCatalogBox').style.display=fixed?'block':'none';
+  const root=document.getElementById('newPurchaseCatalogRows');
+  if(fixed && !root.children.length)addCatalogRow('newPurchaseCatalogRows');
+}
+function toggleEditPurchaseCatalog(){
+  const fixed=document.getElementById('editRelayMode').value==='fixed_purchase';
+  document.getElementById('editPurchaseCatalogBox').style.display=fixed?'block':'none';
+}
+function isPurchaseMode(mode){ return ['fixed_purchase','custom_purchase','purchase'].includes(mode); }
+function addFixedPurchaseInputs(containerId,catalog=[],values=[]){
+  const root=document.getElementById(containerId);
+  root.innerHTML='';
+  const qtyMap={};
+  (values||[]).forEach(x=>{if(x&&typeof x==='object')qtyMap[x.item]=Number(x.qty||0)});
+  (catalog||[]).forEach(item=>{
+    const row=document.createElement('div');
+    row.className='fixed-purchase-row';
+    row.dataset.item=item.item;
+    row.dataset.price=item.unit_price;
+    row.style.cssText='padding:10px;border:1px solid #ddd;border-radius:10px;margin-bottom:8px;background:#fff';
+    row.innerHTML=`
+      <div style="font-weight:600">${esc(item.item)}</div>
+      <div style="font-size:13px;color:#666;margin:3px 0 6px">單價：${moneyText(item.unit_price)} 元</div>
+      <label>數量</label>
+      <input class="fixed-purchase-qty" type="number" min="0" step="1" value="${qtyMap[item.item]||0}">
+      <div class="fixed-purchase-subtotal" style="font-size:14px;color:#555">小計：0 元</div>`;
+    const recalc=()=>{
+      const q=Number(row.querySelector('.fixed-purchase-qty').value||0);
+      row.querySelector('.fixed-purchase-subtotal').textContent='小計：'+moneyText(Number(item.unit_price||0)*q)+' 元';
+    };
+    row.querySelector('.fixed-purchase-qty').addEventListener('input',recalc);
+    root.appendChild(row); recalc();
+  });
+}
+function fixedPurchaseValues(containerId){
+  return Array.from(document.querySelectorAll('#'+containerId+' .fixed-purchase-row')).map(row=>({
+    item:row.dataset.item,
+    unit_price:Number(row.dataset.price||0),
+    qty:Number(row.querySelector('.fixed-purchase-qty').value||0)
+  })).filter(x=>x.qty>0);
+}
 function addPurchaseInput(containerId,value={}){
   const root=document.getElementById(containerId);
   const row=document.createElement('div');
@@ -1272,12 +1417,19 @@ function purchaseValues(containerId){
     qty:Number(row.querySelector('.purchase-qty').value||0)
   })).filter(x=>x.item&&x.unit_price>=0&&x.qty>0);
 }
-function addRelayInputByMode(containerId,mode,value=''){
-  if(mode==='purchase')addPurchaseInput(containerId,value&&typeof value==='object'?value:{});
-  else addRelayInput(containerId,typeof value==='string'?value:'');
+function addRelayInputByMode(containerId,mode,value='',catalog=[]){
+  if(mode==='fixed_purchase'){
+    addFixedPurchaseInputs(containerId,catalog,Array.isArray(value)?value:[]);
+  }else if(mode==='custom_purchase'||mode==='purchase'){
+    addPurchaseInput(containerId,value&&typeof value==='object'?value:{});
+  }else{
+    addRelayInput(containerId,typeof value==='string'?value:'');
+  }
 }
 function relayValuesByMode(containerId,mode){
-  return mode==='purchase'?purchaseValues(containerId):relayValues(containerId);
+  if(mode==='fixed_purchase')return fixedPurchaseValues(containerId);
+  if(mode==='custom_purchase'||mode==='purchase')return purchaseValues(containerId);
+  return relayValues(containerId);
 }
 function toggleNewRelay(){
   const general=document.getElementById('newType').value==='general';
@@ -1287,6 +1439,7 @@ function toggleNewRelay(){
 function toggleNewRelayLabel(){
   const on=document.getElementById('newType').value==='general'&&document.getElementById('newRelayEnabled').checked;
   document.getElementById('newRelayLabelBox').style.display=on?'block':'none';
+  if(on)toggleNewPurchaseCatalog();
 }
 function toggleEditRelay(){
   const general=document.getElementById('editType').value==='general';
@@ -1296,6 +1449,7 @@ function toggleEditRelay(){
 function toggleEditRelayLabel(){
   const on=document.getElementById('editType').value==='general'&&document.getElementById('editRelayEnabled').checked;
   document.getElementById('editRelayLabelBox').style.display=on?'block':'none';
+  if(on)toggleEditPurchaseCatalog();
 }
 
 async function loadEvents(){
@@ -1323,7 +1477,7 @@ try{
     const safeTitle=String(ev.title).replace(/'/g,"\'");
     const typeBadge=ev.event_type==='dharma'
       ? '<div class="meta">法會｜班員／辦事人員分開報名</div>'
-      : (ev.relay_enabled ? `<div class="meta">${ev.relay_mode==='purchase'?'採購／團購':'接龍項目'}：${esc(ev.relay_label||'接龍項目')}</div>` : '');
+      : (ev.relay_enabled ? `<div class="meta">${ev.relay_mode==='fixed_purchase'?'固定商品':((ev.relay_mode==='custom_purchase'||isPurchaseMode(ev.relay_mode||'text'))?'自由採購':'接龍項目')}：${esc(ev.relay_label||'接龍項目')}</div>` : '');
     const deadlineBadge=!ev.registration_open
       ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#fdecec;color:#a22;font-weight:600">報名已截止</div>'
       : (ev.registration_force_open ? '<div style="margin:8px 0;padding:8px 10px;border-radius:9px;background:#e8f8ee;color:#17723b">管理者已重新開放報名</div>' : '');
@@ -1413,6 +1567,7 @@ try{
   fd.append('event_type',document.getElementById('newType').value);
   fd.append('relay_enabled',document.getElementById('newRelayEnabled').checked?'1':'0');
   fd.append('relay_mode',document.getElementById('newRelayMode').value);
+  fd.append('purchase_catalog',JSON.stringify(catalogValues('newPurchaseCatalogRows')));
   fd.append('relay_label',document.getElementById('newRelayLabel').value.trim());
   fd.append('event_date',document.getElementById('newDate').value);
   fd.append('location',document.getElementById('newLocation').value.trim());
@@ -1500,8 +1655,10 @@ async function openEdit(id){
     document.getElementById('editTitle').value=ev.title||'';
     document.getElementById('editType').value=ev.event_type||'general';
     document.getElementById('editRelayEnabled').checked=!!ev.relay_enabled;
-    document.getElementById('editRelayMode').value=ev.relay_mode||'text';
+    document.getElementById('editRelayMode').value=(isPurchaseMode(ev.relay_mode||'text')?'custom_purchase':(ev.relay_mode||'text'));
     document.getElementById('editRelayLabel').value=ev.relay_label||'菜色';
+    document.getElementById('editPurchaseCatalogRows').innerHTML='';
+    (ev.purchase_catalog||[]).forEach(x=>addCatalogRow('editPurchaseCatalogRows',x));
     toggleEditRelay();
     document.getElementById('editDate').value=ev.event_date||'';
     document.getElementById('editLocation').value=ev.location||'';
@@ -1545,6 +1702,7 @@ async function submitEdit(btn){
     fd.append('event_type',document.getElementById('editType').value);
     fd.append('relay_enabled',document.getElementById('editRelayEnabled').checked?'1':'0');
     fd.append('relay_mode',document.getElementById('editRelayMode').value);
+    fd.append('purchase_catalog',JSON.stringify(catalogValues('editPurchaseCatalogRows')));
     fd.append('relay_label',document.getElementById('editRelayLabel').value.trim());
     fd.append('event_date',document.getElementById('editDate').value);
     fd.append('location',document.getElementById('editLocation').value.trim());
@@ -1756,17 +1914,30 @@ function openSignupChoice(id,title,eventType){
   document.getElementById('unifiedSelfRelay').style.display=relayOn?'block':'none';
   document.getElementById('unifiedProxyRelay').style.display=relayOn?'block':'none';
   const relayMode=(ev&&ev.relay_mode)||'text';
-  document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+(relayMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
-  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+(relayMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
+  const fixed=relayMode==='fixed_purchase';
+  const purchase=isPurchaseMode(relayMode);
+  document.getElementById('unifiedSelfRelayLabel').textContent='我的'+((ev&&ev.relay_label)||'接龍項目')+(fixed?'（請填數量）':(purchase?'（品項／單價／數量）':'（可填多項）'));
+  document.getElementById('unifiedProxyRelayLabel').textContent='代報者的'+((ev&&ev.relay_label)||'接龍項目')+(fixed?'（請填數量）':(purchase?'（品項／單價／數量）':'（可填多項）'));
   document.getElementById('unifiedSelfRelayItems').innerHTML='';
   document.getElementById('unifiedProxyRelayItems').innerHTML='';
   const selfAddBtn=document.querySelector('#unifiedSelfRelay button');
   const proxyAddBtn=document.querySelector('#unifiedProxyRelay button');
-  if(selfAddBtn)selfAddBtn.onclick=()=>addRelayInputByMode('unifiedSelfRelayItems',relayMode);
-  if(proxyAddBtn)proxyAddBtn.onclick=()=>addRelayInputByMode('unifiedProxyRelayItems',relayMode);
+  if(selfAddBtn){
+    selfAddBtn.style.display=fixed?'none':'block';
+    selfAddBtn.onclick=()=>addRelayInputByMode('unifiedSelfRelayItems',relayMode);
+  }
+  if(proxyAddBtn){
+    proxyAddBtn.style.display=fixed?'none':'block';
+    proxyAddBtn.onclick=()=>addRelayInputByMode('unifiedProxyRelayItems',relayMode);
+  }
   if(relayOn){
-    addRelayInputByMode('unifiedSelfRelayItems',relayMode);
-    addRelayInputByMode('unifiedProxyRelayItems',relayMode);
+    if(fixed){
+      addFixedPurchaseInputs('unifiedSelfRelayItems',ev.purchase_catalog||[],[]);
+      addFixedPurchaseInputs('unifiedProxyRelayItems',ev.purchase_catalog||[],[]);
+    }else{
+      addRelayInputByMode('unifiedSelfRelayItems',relayMode);
+      addRelayInputByMode('unifiedProxyRelayItems',relayMode);
+    }
   }
 
   signupChoiceDialog.showModal();
@@ -1955,7 +2126,7 @@ function openAdminSignupEdit(eventId,signupId){
   adminEditEventType=ev.event_type||'general';
   adminEditRelayEnabled=!!ev.relay_enabled;
   adminEditRelayLabel=ev.relay_label||'接龍項目';
-  adminEditRelayMode=ev.relay_mode||'text';
+  adminEditRelayMode=ev.relay_mode==='purchase'?'custom_purchase':(ev.relay_mode||'text');
 
   document.getElementById('adminSignupEditTitle').textContent='編輯報名｜'+p.name;
   document.getElementById('adminSignupName').value=p.name||'';
@@ -1969,8 +2140,15 @@ function openAdminSignupEdit(eventId,signupId){
   document.getElementById('adminRelayEditItems').innerHTML='';
   if(!isDharma&&adminEditRelayEnabled){
     const addBtn=document.querySelector('#adminRelayEditBox .secondary');
-    if(addBtn)addBtn.onclick=()=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode);
-    (p.relay_items&&p.relay_items.length?p.relay_items:[adminEditRelayMode==='purchase'?{}:'']).forEach(x=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode,x));
+    if(addBtn){
+      addBtn.style.display=adminEditRelayMode==='fixed_purchase'?'none':'block';
+      addBtn.onclick=()=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode);
+    }
+    if(adminEditRelayMode==='fixed_purchase'){
+      addFixedPurchaseInputs('adminRelayEditItems',(ev&&ev.purchase_catalog)||[],p.relay_items||[]);
+    }else{
+      (p.relay_items&&p.relay_items.length?p.relay_items:[isPurchaseMode(adminEditRelayMode)?{}:'']).forEach(x=>addRelayInputByMode('adminRelayEditItems',adminEditRelayMode,x));
+    }
   }
 
   if(isDharma){
@@ -2041,7 +2219,7 @@ function personText(p){
   return `${esc(p.name)}${proxy}`;
 }
 function relayItemsText(p,mode='text'){
-  if(mode==='purchase'){
+  if(isPurchaseMode(mode)){
     return (p.relay_items||[]).map(x=>`${esc(x.item||'')}｜${moneyText(x.unit_price)} × ${moneyText(x.qty)} = ${moneyText(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0)))} 元`).join('<br>');
   }
   return (p.relay_items||[]).map(esc).join('、');
@@ -2052,13 +2230,21 @@ function openRelayEditById(eventId,signupId,label){
   const ev=events.find(x=>x.id===eventId);
   if(!p)return;
   relayEditEventId=eventId; relayEditSignupId=signupId;
-  relayEditMode=(ev&&ev.relay_mode)||'text';
+  relayEditMode=((ev&&ev.relay_mode)==='purchase'?'custom_purchase':((ev&&ev.relay_mode)||'text'));
   document.getElementById('relayEditTitle').textContent='修改接龍｜'+p.name;
-  document.getElementById('relayEditLabel').textContent=(label||'接龍項目')+(relayEditMode==='purchase'?'（品項／單價／數量）':'（可填多項）');
+  const fixed=relayEditMode==='fixed_purchase';
+  document.getElementById('relayEditLabel').textContent=(label||'接龍項目')+(fixed?'（請修改數量）':(isPurchaseMode(relayEditMode)?'（品項／單價／數量）':'（可填多項）'));
   document.getElementById('relayEditItems').innerHTML='';
   const btn=document.querySelector('#relayEditDialog .secondary');
-  if(btn)btn.onclick=()=>addRelayInputByMode('relayEditItems',relayEditMode);
-  (p.relay_items&&p.relay_items.length?p.relay_items:[relayEditMode==='purchase'?{}:'']).forEach(x=>addRelayInputByMode('relayEditItems',relayEditMode,x));
+  if(btn){
+    btn.style.display=fixed?'none':'block';
+    btn.onclick=()=>addRelayInputByMode('relayEditItems',relayEditMode);
+  }
+  if(fixed){
+    addFixedPurchaseInputs('relayEditItems',(ev&&ev.purchase_catalog)||[],p.relay_items||[]);
+  }else{
+    (p.relay_items&&p.relay_items.length?p.relay_items:[isPurchaseMode(relayEditMode)?{}:'']).forEach(x=>addRelayInputByMode('relayEditItems',relayEditMode,x));
+  }
   relayEditDialog.showModal();
 }
 async function submitRelayEdit(btn){
@@ -2109,15 +2295,15 @@ async function showList(id,title){
     }else{
       document.getElementById('listBody').innerHTML=d.people.map((p,i)=>{
         const b=cancelBtn(id,p,title);
-        const itemTotal=(d.relay_mode==='purchase'&&p.relay_items)?p.relay_items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0):0;
+        const itemTotal=(isPurchaseMode(d.relay_mode||'text')&&p.relay_items)?p.relay_items.reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0):0;
         const items=d.relay_enabled&&p.relay_items&&p.relay_items.length
-          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p,d.relay_mode||'text')}${d.relay_mode==='purchase'?`<br><b>個人合計：${moneyText(itemTotal)} 元</b>`:''}</div>`:'';
+          ? `<div style="font-size:14px;color:#555;margin:3px 0 0 18px">${esc(d.relay_label||'接龍項目')}：${relayItemsText(p,d.relay_mode||'text')}${isPurchaseMode(d.relay_mode||'text')?`<br><b>個人合計：${moneyText(itemTotal)} 元</b>`:''}</div>`:'';
         const edit=!adminMode&&d.relay_enabled&&p.can_cancel
           ? `<button class="secondary" style="padding:5px 9px;margin-left:8px" onclick="openRelayEditById(${id},${p.id},'${String(d.relay_label||'接龍項目').replace(/'/g,"\\'")}')">修改接龍</button>`:'';
         const admin=adminButtons(id,p,title);
         return `<div style="margin:9px 0"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${i+1}. ${personText(p)}</span><span>${admin}${edit}${b}</span></div>${items}</div>`
       }).join('');
-      if(d.relay_enabled&&d.relay_mode==='purchase'){
+      if(d.relay_enabled&&isPurchaseMode(d.relay_mode||'text')){
         const grand=d.people.reduce((sum,p)=>sum+(p.relay_items||[]).reduce((s,x)=>s+Number(x.subtotal??(Number(x.unit_price||0)*Number(x.qty||0))),0),0);
         document.getElementById('listBody').innerHTML += `<div style="margin-top:14px;padding-top:10px;border-top:1px solid #ddd"><b>全部總金額：${moneyText(grand)} 元</b></div>`;
       }
@@ -2188,8 +2374,13 @@ def api_liff_create_event():
     relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
     relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
     relay_mode = str(request.form.get("relay_mode", "text")).strip()
-    if relay_mode not in {"text", "purchase"}:
+    if relay_mode == "purchase":
+        relay_mode = "custom_purchase"
+    if relay_mode not in {"text", "fixed_purchase", "custom_purchase"}:
         relay_mode = "text"
+    purchase_catalog = parse_purchase_catalog(request.form.get("purchase_catalog", "[]"))
+    if relay_mode == "fixed_purchase" and relay_enabled and not purchase_catalog:
+        return jsonify({"error": "固定商品模式請至少設定一項商品與單價"}), 400
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -2220,6 +2411,7 @@ def api_liff_create_event():
             relay_enabled=relay_enabled,
             relay_label=relay_label,
             relay_mode=relay_mode,
+            purchase_catalog=purchase_catalog,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -2241,8 +2433,13 @@ def api_liff_update_event():
     relay_enabled = str(request.form.get("relay_enabled", "0")).strip() in {"1","true","True","on"}
     relay_label = str(request.form.get("relay_label", "")).strip() or "接龍項目"
     relay_mode = str(request.form.get("relay_mode", "text")).strip()
-    if relay_mode not in {"text", "purchase"}:
+    if relay_mode == "purchase":
+        relay_mode = "custom_purchase"
+    if relay_mode not in {"text", "fixed_purchase", "custom_purchase"}:
         relay_mode = "text"
+    purchase_catalog = parse_purchase_catalog(request.form.get("purchase_catalog", "[]"))
+    if relay_mode == "fixed_purchase" and relay_enabled and not purchase_catalog:
+        return jsonify({"error": "固定商品模式請至少設定一項商品與單價"}), 400
     event_date = str(request.form.get("event_date", "")).strip() or None
     location = str(request.form.get("location", "")).strip() or None
     registration_deadline = str(request.form.get("registration_deadline", "")).strip() or None
@@ -2280,6 +2477,7 @@ def api_liff_update_event():
                 relay_enabled=%s,
                 relay_label=%s,
                 relay_mode=%s,
+                purchase_catalog=%s,
                 registration_force_open=FALSE,
                 registration_manual_closed=FALSE
             WHERE id=%s AND group_id=%s
@@ -2295,6 +2493,9 @@ def api_liff_update_event():
                 bool(relay_enabled) if event_type == 'general' else False,
                 relay_label if relay_enabled and event_type == 'general' else None,
                 relay_mode if relay_enabled and event_type == 'general' else 'text',
+                json.dumps(purchase_catalog, ensure_ascii=False)
+                if relay_enabled and event_type == 'general' and relay_mode == 'fixed_purchase'
+                else None,
                 event_id,
                 group_id,
             ),
@@ -2453,6 +2654,7 @@ def api_liff_events():
             "relay_enabled": bool(ev.get("relay_enabled")),
             "relay_label": ev.get("relay_label") or "接龍項目",
             "relay_mode": ev.get("relay_mode") or "text",
+            "purchase_catalog": parse_purchase_catalog(ev.get("purchase_catalog")),
         })
 
     return jsonify({"events": result})
@@ -2486,6 +2688,7 @@ def api_liff_event_detail():
             "relay_enabled": bool(ev.get("relay_enabled")),
             "relay_label": ev.get("relay_label") or "接龍項目",
             "relay_mode": ev.get("relay_mode") or "text",
+            "purchase_catalog": parse_purchase_catalog(ev.get("purchase_catalog")),
         }
     })
 
@@ -2693,7 +2896,7 @@ def api_liff_list():
             "relay_items": parse_relay_items(row.get("relay_items")),
         })
 
-    return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目", "relay_mode": ev.get("relay_mode") or "text"})
+    return jsonify({"people": people, "event_type": ev.get("event_type") or "general", "relay_enabled": bool(ev.get("relay_enabled")), "relay_label": ev.get("relay_label") or "接龍項目", "relay_mode": ev.get("relay_mode") or "text", "purchase_catalog": parse_purchase_catalog(ev.get("purchase_catalog"))})
 
 
 @app.route("/api/liff/admin-signup/update", methods=["POST"])
@@ -2892,7 +3095,7 @@ def _final_list_text(group_id, ev):
         relay_label = ev.get("relay_label") or "接龍項目"
         for i, r in enumerate(rows, 1):
             items = parse_relay_items(r.get("relay_items"))
-            if ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") == "purchase":
+            if ev.get("relay_enabled") and items and (ev.get("relay_mode") or "text") in {"fixed_purchase", "custom_purchase", "purchase"}:
                 lines.append(f"{i}. {_signup_display_name(r)}")
                 person_total = 0
                 for item in items:
@@ -2906,7 +3109,7 @@ def _final_list_text(group_id, ev):
                 text_items = [str(x) for x in items if not isinstance(x, dict)]
                 suffix = f"｜{relay_label}：{'、'.join(text_items)}" if ev.get("relay_enabled") and text_items else ""
                 lines.append(f"{i}. {_signup_display_name(r)}{suffix}")
-        if ev.get("relay_enabled") and (ev.get("relay_mode") or "text") == "purchase":
+        if ev.get("relay_enabled") and (ev.get("relay_mode") or "text") in {"fixed_purchase", "custom_purchase", "purchase"}:
             grand_total = 0
             for r in rows:
                 for item in parse_relay_items(r.get("relay_items")):
